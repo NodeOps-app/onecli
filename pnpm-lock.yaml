@@ -14,6 +14,9 @@ importers:
       '@clack/prompts':
         specifier: 1.7.0
         version: 1.7.0
+      '@nodeops-createos/sandbox':
+        specifier: 0.8.1
+        version: 0.8.1
       dotenv-cli:
         specifier: ^11.0.0
         version: 11.0.0
