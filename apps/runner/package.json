@@ -11,6 +11,7 @@
     "./control-plane": "./src/control-plane.ts",
     "./turn-events": "./src/turn-events.ts",
     "./supervisor-messages": "./src/supervisor-messages.ts",
+    "./backend/createos": "./src/backend/createos/createos-backend.ts",
     "./backend/docker": "./src/backend/docker/docker-backend.ts",
     "./ws/server": "./src/ws/server.ts"
   },
@@ -24,6 +25,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@nodeops-createos/sandbox": "0.8.1",
     "@onecli/agent-protocol": "workspace:*",
     "undici": "^8.0.0",
     "ws": "^8.18.0",

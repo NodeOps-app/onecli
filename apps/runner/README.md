@@ -89,7 +89,7 @@ Every address is configuration with a local default. The ones that matter:
 | ----------------------------- | ------------------------ | ----------------------------------------------------- |
 | `RUNNER_TOKEN`                | _(required)_             | Its credential, and the registration anchor           |
 | `RUNNER_CONTROL_PLANE_URL`    | `http://localhost:10256` | Where it polls                                        |
-| `RUNNER_BACKEND`              | `docker`                 | `docker` or `fake` — config, never detection          |
+| `RUNNER_BACKEND`              | `docker`                 | `docker`, `createos` or `fake` — config, never detection |
 | `RUNNER_AGENT_IMAGE`          | `onecli-agent:dev`       | The sandbox base image                                |
 | `RUNNER_SANDBOX_NETWORK`      | `onecli-sandboxes`       | The isolated network sandboxes join                   |
 | `RUNNER_NETWORK_INTERNAL`     | `true`                   | `true` = that network has NO route out (dev-only off) |
@@ -104,6 +104,59 @@ Sandbox resource limits: `RUNNER_SANDBOX_MEMORY_MB` (2048),
 `host.docker.internal` does not resolve inside a container,
 `RUNNER_SANDBOX_EXTRA_HOSTS=host.docker.internal:host-gateway` adds it to every
 sandbox's `/etc/hosts` (dev setups where the gateway runs on the host).
+
+## The CreateOS backend
+
+`RUNNER_BACKEND=createos` puts each sandbox in a Firecracker microVM instead of
+a local container. Nothing above the seam changes — not the api, not the
+supervisor, not the image.
+
+```
+ ┌─ onecli infra ──────────┐   ┌─ CreateOS ──────────────────┐
+ │  api ◄── long-poll ─────┼───┼── runner (no docker)        │
+ │  gateway ◄── TLS ───────┼───┼── agent VMs ──┐             │
+ └─────────────────────────┘   │      overlay ─┘             │
+                               └─────────────────────────────┘
+```
+
+The runner runs as a CreateOS sandbox itself, on the same overlay network as
+the agents. That is what keeps its control channel private: overlay membership
+is an eBPF `(src, dst)` pair allowlist, so a sandbox reaches the runner with no
+public port and no VPN on anybody's laptop. Traffic OUT still goes only to the
+gateway, now by per-VM iptables allowlist rather than by an unroutable network.
+
+Three things work differently, and all three are deliberate:
+
+- **The egress allowlist is derived, never configured.** It is read from the
+  `HTTPS_PROXY` the control plane already put in the spawn payload, so it can
+  never drift from the proxy the agent was told to use. A payload with no
+  parseable proxy is refused rather than defaulting to open.
+- **The env arrives as a file.** CreateOS caps a persistent env value at 4096
+  bytes and `AGENT_INSTRUCTIONS` can exceed it. A side effect is that the
+  single-use channel token never reaches the CreateOS database at all.
+- **Homes are archived, not mounted.** A microVM takes no volume, and the
+  runner recreates the VM on every start anyway. The home is captured at stop
+  and restored at create, `tar` through `zstd`, capped at 500 MB compressed by
+  the files endpoint. This backend therefore reports `snapshot` durability: a
+  VM lost without a stop loses what it wrote since its start.
+
+| Variable                            | Default                  | What it does                              |
+| ----------------------------------- | ------------------------ | ----------------------------------------- |
+| `RUNNER_CREATEOS_BASE_URL`          | _(required)_             | CreateOS control plane                    |
+| `RUNNER_CREATEOS_API_KEY`           | _(required)_             | Its credential                            |
+| `RUNNER_CREATEOS_NETWORK`           | `onecli-sandboxes`       | Overlay network; created if absent        |
+| `RUNNER_CREATEOS_HOMES_DIR`         | `/var/lib/onecli/homes`  | Where homes live — MUST be durable        |
+| `RUNNER_CREATEOS_SHAPE`             | _(auto)_                 | Empty = smallest shape meeting the limits |
+| `RUNNER_CREATEOS_EXTRA_EGRESS`      | _(none)_                 | Extra `host:port` rules, added to the derived one |
+| `RUNNER_CREATEOS_AUTO_PAUSE_SECONDS`| `0`                      | `0` = never; otherwise 60–86400           |
+
+`RUNNER_CREATEOS_HOMES_DIR` is the one that bites. A runner redeploy recreates
+the runner's own VM, so without a durable disk mounted there, that single event
+erases every agent's home at once.
+
+`RUNNER_AGENT_IMAGE` names a CreateOS template rather than a Docker tag. Build
+one with `pnpm agent:template <rootfs-tarball-url>`; see that script's header
+for why the agent Dockerfile cannot be submitted directly.
 
 ## Sizing
 

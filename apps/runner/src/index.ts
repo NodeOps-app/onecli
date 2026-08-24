@@ -3,8 +3,10 @@ import type { RunnerEvent, WorkItem } from "@onecli/agent-protocol";
 import { ConfigError, loadConfig } from "./config";
 import { installationFingerprint } from "./installation";
 import { ControlPlaneError, createControlPlaneClient } from "./control-plane";
+import { createCreateosBackend } from "./backend/createos/createos-backend";
 import { createDockerBackend } from "./backend/docker/docker-backend";
 import { createFakeBackend } from "./backend/fake";
+import type { CreateosConfig } from "./config";
 import type { SandboxBackend } from "./backend/types";
 import { createRunner } from "./runner";
 import { createRunnerWsServer } from "./ws/server";
@@ -26,12 +28,42 @@ const selectBackend = (
     internal: boolean;
     socket: string;
     extraHosts: string[];
+    createos: CreateosConfig;
   },
 ): SandboxBackend => {
   if (backendId === "fake") return createFakeBackend();
+  if (backendId === "createos") {
+    const { createos } = options;
+    if (!createos.baseUrl || !createos.apiKey) {
+      throw new ConfigError(
+        'RUNNER_BACKEND="createos" needs RUNNER_CREATEOS_BASE_URL and RUNNER_CREATEOS_API_KEY.',
+      );
+    }
+    // CreateOS accepts 60–86400 and rejects everything else, so a value in
+    // between would fail every create rather than pausing sooner.
+    if (
+      createos.autoPauseSeconds !== 0 &&
+      (createos.autoPauseSeconds < 60 || createos.autoPauseSeconds > 86_400)
+    ) {
+      throw new ConfigError(
+        `RUNNER_CREATEOS_AUTO_PAUSE_SECONDS must be 0 (never) or between 60 and 86400 — got ${createos.autoPauseSeconds}.`,
+      );
+    }
+    return createCreateosBackend({
+      runnerId: options.runnerId,
+      installationId: options.installationId,
+      baseUrl: createos.baseUrl,
+      apiKey: createos.apiKey,
+      network: createos.network,
+      homesDir: createos.homesDir,
+      shape: createos.shape,
+      extraEgress: createos.extraEgress,
+      autoPauseSeconds: createos.autoPauseSeconds,
+    });
+  }
   if (backendId !== "docker") {
     throw new ConfigError(
-      `Unknown RUNNER_BACKEND "${backendId}" — expected "docker" or "fake".`,
+      `Unknown RUNNER_BACKEND "${backendId}" — expected "docker", "createos" or "fake".`,
     );
   }
   return createDockerBackend({
@@ -65,6 +97,7 @@ const main = async (): Promise<void> => {
     internal: config.networkInternal,
     socket: config.dockerSocket,
     extraHosts: config.sandboxExtraHosts,
+    createos: config.createos,
   });
 
   const controlPlane = createControlPlaneClient({
@@ -127,14 +160,12 @@ const main = async (): Promise<void> => {
   // Late-bound: the handler needs to send tool results back down a channel
   // the server owns, and the server needs the handler at construction. The
   // ref is assigned immediately below, before any connection can exist.
-  let sendToSandbox: (sandboxId: string, item: WorkItem) => boolean = () =>
-    false;
+  let sendToSandbox: (sandboxId: string, item: WorkItem) => boolean = () => false;
   // Same late-bind as sendToSandbox: the message handler needs the runner's
   // container map, but the handler is built before the runner. Reassigned to
   // the real lookup immediately after createRunner, before any connection
   // (and so any process.state frame) can exist.
-  let containerRefOf: (sandboxId: string) => string | undefined = () =>
-    undefined;
+  let containerRefOf: (sandboxId: string) => string | undefined = () => undefined;
   const wsServer = createRunnerWsServer({
     port: config.wsPort,
     onMessage: createSupervisorMessageHandler({
@@ -220,9 +251,7 @@ const main = async (): Promise<void> => {
       ]);
     };
     drain()
-      .catch((error: unknown) =>
-        log("warn", "shutdown drain failed", { error: String(error) }),
-      )
+      .catch((error: unknown) => log("warn", "shutdown drain failed", { error: String(error) }))
       .finally(() => process.exit(0));
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));

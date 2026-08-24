@@ -138,8 +138,11 @@ WORKDIR /app
 # manager's boot.sh formats and mounts the raw block home, then setpriv-drops
 # to `node` — plans/sandbox-platform.md step 2); inert under the Docker
 # backend, where the home arrives as a pre-mounted volume.
+# zstd serves the CreateOS backend, which cannot mount a volume into a microVM
+# and so carries the home in and out as a compressed archive on every start and
+# stop (backend/createos/homes.ts); inert under the Docker backend.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends tini git curl ripgrep ca-certificates openssl e2fsprogs util-linux \
+  && apt-get install -y --no-install-recommends tini git curl ripgrep ca-certificates openssl e2fsprogs util-linux zstd \
   && rm -rf /var/lib/apt/lists/*
 ENTRYPOINT ["/usr/bin/tini", "--"]
 

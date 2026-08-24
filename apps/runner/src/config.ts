@@ -45,6 +45,36 @@ export interface RunnerConfig {
   orphanReap: boolean;
   /** Minimum age before a stale-label object may be reaped. */
   orphanGraceSeconds: number;
+  /** Only read when `backend` is "createos". */
+  createos: CreateosConfig;
+}
+
+/**
+ * Settings for the CreateOS backend (`RUNNER_BACKEND=createos`).
+ *
+ * Deliberately absent: an egress allowlist. The sandbox's allowlist is
+ * DERIVED from the gateway address the control plane already put in the spawn
+ * payload, so it can never drift from the proxy the agent was told to use and
+ * there is no allow-all default to leave in place by accident.
+ * `RUNNER_CREATEOS_EXTRA_EGRESS` only ADDS to that derived rule.
+ */
+export interface CreateosConfig {
+  baseUrl: string;
+  apiKey: string;
+  /** Overlay network the runner and every sandbox share. Created if absent. */
+  network: string;
+  /**
+   * Where agent homes are stored. MUST be durable across a runner redeploy —
+   * the runner sandbox mounts a disk here. A path on an ephemeral filesystem
+   * loses every agent's files the first time the runner is replaced.
+   */
+  homesDir: string;
+  /** Explicit shape id. Empty = smallest shape meeting the configured limits. */
+  shape: string;
+  /** Extra `host:port` rules added to the derived gateway rule. */
+  extraEgress: string[];
+  /** Idle auto-pause, in seconds. 0 = never (CreateOS accepts 60–86400). */
+  autoPauseSeconds: number;
 }
 
 const int = (raw: string | undefined, fallback: number): number => {
@@ -59,9 +89,7 @@ const bool = (raw: string | undefined, fallback: boolean): boolean =>
 
 export class ConfigError extends Error {}
 
-export const loadConfig = (
-  env: NodeJS.ProcessEnv = process.env,
-): RunnerConfig => {
+export const loadConfig = (env: NodeJS.ProcessEnv = process.env): RunnerConfig => {
   const token = env.RUNNER_TOKEN ?? "";
   if (!token) {
     throw new ConfigError(
@@ -89,10 +117,7 @@ export const loadConfig = (
     maxSandboxes: int(env.RUNNER_MAX_SANDBOXES, 4),
     limits: {
       memoryMb: int(env.RUNNER_SANDBOX_MEMORY_MB, 2048),
-      cpus:
-        Number(env.RUNNER_SANDBOX_CPUS) > 0
-          ? Number(env.RUNNER_SANDBOX_CPUS)
-          : 1,
+      cpus: Number(env.RUNNER_SANDBOX_CPUS) > 0 ? Number(env.RUNNER_SANDBOX_CPUS) : 1,
       pids: int(env.RUNNER_SANDBOX_PIDS, 512),
     },
     reconcileSeconds: int(env.RUNNER_RECONCILE_SECONDS, 60),
@@ -103,5 +128,19 @@ export const loadConfig = (
       .filter((entry) => entry.length > 0),
     orphanReap: bool(env.RUNNER_ORPHAN_REAP, true),
     orphanGraceSeconds: int(env.RUNNER_ORPHAN_GRACE_SECONDS, 3600),
+    createos: {
+      baseUrl: env.RUNNER_CREATEOS_BASE_URL ?? env.CREATEOS_SANDBOX_BASE_URL ?? "",
+      apiKey: env.RUNNER_CREATEOS_API_KEY ?? env.CREATEOS_SANDBOX_API_KEY ?? "",
+      network: env.RUNNER_CREATEOS_NETWORK ?? "onecli-sandboxes",
+      homesDir: env.RUNNER_CREATEOS_HOMES_DIR ?? "/var/lib/onecli/homes",
+      shape: env.RUNNER_CREATEOS_SHAPE ?? "",
+      extraEgress: (env.RUNNER_CREATEOS_EXTRA_EGRESS ?? "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+      // 0 = never. CreateOS rejects anything between 1 and 59, so a value in
+      // that range would fail every create rather than pausing sooner.
+      autoPauseSeconds: int(env.RUNNER_CREATEOS_AUTO_PAUSE_SECONDS, 0),
+    },
   };
 };

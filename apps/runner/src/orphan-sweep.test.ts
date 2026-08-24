@@ -43,6 +43,15 @@ const baseConfig: RunnerConfig = {
   sandboxExtraHosts: [],
   orphanReap: true,
   orphanGraceSeconds: 3600,
+  createos: {
+    baseUrl: "",
+    apiKey: "",
+    network: "onecli-sandboxes",
+    homesDir: "/var/lib/onecli/homes",
+    shape: "",
+    extraEgress: [],
+    autoPauseSeconds: 0,
+  },
 };
 
 const MY_RUNNER_ID = "r-1";
