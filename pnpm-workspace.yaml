@@ -1,3 +1,16 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# pnpm 10+ ignores postinstall scripts by default. Without this, a fresh
+# install silently skips prisma's client generation and sharp/esbuild's
+# native binary fetch — everything still resolves, nothing works.
+onlyBuiltDependencies:
+  - "@prisma/client"
+  - "@prisma/engines"
+  - core-js
+  - esbuild
+  - prisma
+  - protobufjs
+  - sharp
+  - unrs-resolver
