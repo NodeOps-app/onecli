@@ -110,7 +110,14 @@ RUN corepack pnpm dlx turbo@2.8.11 prune @onecli/sandbox-supervisor --docker
 WORKDIR /repo/out/full
 # corepack resolves the exact pinned version from package.json's
 # packageManager field on its own — nothing to pin here.
-RUN corepack pnpm install --frozen-lockfile
+#
+# --no-frozen-lockfile, not --frozen: turbo's pruned package.json does not
+# carry the root's pnpm.overrides, so pnpm sees that as lockfile drift and a
+# frozen install refuses it (ERR_PNPM_LOCKFILE_CONFIG_MISMATCH), confirmed
+# by running it. Acceptable for a template build, which needs a WORKING
+# install, not CI's exact-lockfile guarantee — revisit if this ever becomes
+# the release pipeline rather than a proof build.
+RUN corepack pnpm install --no-frozen-lockfile
 RUN corepack pnpm build --filter=@onecli/sandbox-supervisor
 RUN echo "node-linker=hoisted" >> .npmrc
 
