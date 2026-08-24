@@ -382,6 +382,23 @@ describe("createos backend", () => {
     expect(envFile).toContain("SANDBOX_WS_TOKEN='single-use'");
   });
 
+  it("re-asserts /workspace ownership on every start, not only on restore", async () => {
+    // CreateOS's own build-to-rootfs conversion resets /workspace to
+    // root:root regardless of what the template baked in — found by
+    // inspecting a live VM, not assumed. startSandbox must fix this even
+    // when there is no archive to restore (an agent's first-ever start).
+    const backend = backendFor();
+    await backend.prepare();
+    backend.identify("runner-a");
+    const ref = await backend.createSandbox(
+      spec({ homeRef: await backend.provisionHome(spec().sandboxId) }),
+    );
+    await backend.startSandbox(ref);
+    expect(
+      fake.vms.get(ref)!.commands.some((cmd) => /chown -R node:node \/workspace/.test(cmd)),
+    ).toBe(true);
+  });
+
   it("carries the home across the destroy-and-recreate every start does", async () => {
     const backend = backendFor();
     await backend.prepare();
@@ -441,9 +458,7 @@ describe("createos backend", () => {
     await backend.removeSandbox(second);
 
     const third = await backend.createSandbox(spec({ homeRef: home }));
-    expect(fake.vms.get(third)!.home?.toString("utf8")).toBe(
-      "small and restorable",
-    );
+    expect(fake.vms.get(third)!.home?.toString("utf8")).toBe("small and restorable");
   });
 
   it("treats a vanished sandbox as already stopped", async () => {
@@ -470,9 +485,7 @@ describe("createos backend", () => {
     await backend.prepare();
     backend.identify("runner-a");
     // 409 is fc's per-user unique-name violation.
-    fake.failNextCreate(
-      apiError(CreateosSandboxValidationError, 409, "name already in use"),
-    );
+    fake.failNextCreate(apiError(CreateosSandboxValidationError, 409, "name already in use"));
     const ref = await backend.createSandbox(
       spec({ homeRef: await backend.provisionHome(spec().sandboxId) }),
     );

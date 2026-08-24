@@ -282,8 +282,8 @@ export const createCreateosBackend = (options: CreateosBackendOptions): SandboxB
   /** Put the agent's stored files back into a freshly created VM. */
   const restoreHome = async (sandbox: Sandbox, homeRef: HomeRef): Promise<void> => {
     const archive = await homes.readArchive(homeRef);
-    // Absent on an agent's very first start. The image already created and
-    // chowned /workspace, so there is nothing to do.
+    // Absent on an agent's very first start. Ownership on a workspace with
+    // nothing to restore is `startSandbox`'s job, not this function's.
     if (!archive) return;
     await sandbox.files.upload(ARCHIVE_PATH, new Uint8Array(archive));
     // --no-same-owner: the archive was written by whatever uid ran in the
@@ -495,6 +495,13 @@ export const createCreateosBackend = (options: CreateosBackendOptions): SandboxB
     async startSandbox(ref) {
       const sandbox = await connect(ref);
       if (!sandbox) throw new Error(`sandbox ${ref} no longer exists`);
+      // The template bakes /workspace as node:node (docker/agent.Dockerfile's
+      // own rule), but CreateOS's own build-to-rootfs conversion resets it to
+      // root:root — confirmed by inspecting a live VM, not assumed. Restoring
+      // an archive already re-chowns it (restoreHome); a fresh VM with no
+      // archive needs the same fix, so it runs here unconditionally instead
+      // of only on the restore path.
+      await exec(sandbox, `chown -R ${AGENT_USER}:${AGENT_USER} ${HOME_MOUNT}`, "home ownership");
       // A CreateOS VM is already booted by the time `createSandbox` returns;
       // there is no image ENTRYPOINT to trigger. Starting the sandbox means
       // starting the supervisor, detached — `runCommand` blocks until the
