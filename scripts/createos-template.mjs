@@ -97,13 +97,29 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \\
 
 RUN corepack enable
 
-RUN git clone --depth 1 --branch ${ref} https://github.com/NodeOps-app/onecli /app
-WORKDIR /app
+# A full-workspace install (1170 packages across 15 projects) plus the
+# upload/pack step that follows it does not fit CreateOS's 10-minute build
+# timeout — proved by running it: the build itself completed and committed
+# cleanly, but the template was still marked failed with ext4_size_bytes: 0,
+# because the timeout landed on the pack/upload step right after. turbo
+# prune is docker/agent.Dockerfile's own answer to this, reused here for the
+# same reason: install only what @onecli/sandbox-supervisor needs.
+RUN git clone --depth 1 --branch ${ref} https://github.com/NodeOps-app/onecli /repo
+WORKDIR /repo
+RUN corepack pnpm dlx turbo@2.8.11 prune @onecli/sandbox-supervisor --docker
+WORKDIR /repo/out/full
 # corepack resolves the exact pinned version from package.json's
 # packageManager field on its own — nothing to pin here.
 RUN corepack pnpm install --frozen-lockfile
 RUN corepack pnpm build --filter=@onecli/sandbox-supervisor
 RUN echo "node-linker=hoisted" >> .npmrc
+
+# Relocate to /app: the guest-side path the runner's launcher and
+# docker/agent-entrypoint.sh both assume (backend/createos/createos-backend.ts
+# APP_DIR). /repo — the full, unpruned clone — is no longer needed.
+WORKDIR /
+RUN mv /repo/out/full /app && rm -rf /repo
+WORKDIR /app
 
 ARG TARGETARCH=amd64
 ARG JCODE_VERSION=${JCODE_VERSION}
