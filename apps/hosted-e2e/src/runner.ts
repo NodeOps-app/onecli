@@ -1,10 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { RunnerEvent, WorkItem } from "@onecli/agent-protocol";
 import type { RunnerConfig } from "@onecli/runner/config";
-import {
-  ControlPlaneError,
-  createControlPlaneClient,
-} from "@onecli/runner/control-plane";
+import { ControlPlaneError, createControlPlaneClient } from "@onecli/runner/control-plane";
+import { createCreateosBackend } from "@onecli/runner/backend/createos";
 import { createDockerBackend } from "@onecli/runner/backend/docker";
 import { installationFingerprint } from "@onecli/runner/installation";
 import { createRunner } from "@onecli/runner/runner";
@@ -61,18 +59,25 @@ export interface StartRunnerOptions {
   orphanReap?: boolean;
 }
 
-export const startTestRunner = async (
-  opts: StartRunnerOptions,
-): Promise<TestRunnerHandle> => {
+export const startTestRunner = async (opts: StartRunnerOptions): Promise<TestRunnerHandle> => {
   const wsPort = await freePort();
+
+  // CreateOS has no per-container bridge network with a host shortcut like
+  // `host.docker.internal` — a VM reaches only what it is explicitly attached
+  // to. The suite's normal per-test network (`opts.ids.network`) would need
+  // the control-plane sandbox to attach/detach it on every test, which this
+  // harness does not do yet. A single shared overlay is the honest scope for
+  // now: fine for one proof run, not for the full suite's parallel isolation.
+  const sandboxNetwork =
+    opts.config.backend === "createos" ? opts.config.createos.network : opts.ids.network;
 
   const runnerConfig: RunnerConfig = {
     token: opts.ids.runnerToken,
     controlPlaneUrl: opts.controlPlaneUrl,
     name: `hosted-e2e-${opts.ids.nonce}`,
-    backend: "docker",
+    backend: opts.config.backend,
     agentImage: opts.config.agentImage,
-    sandboxNetwork: opts.ids.network,
+    sandboxNetwork,
     networkInternal: false,
     wsPort,
     advertisedHost: opts.config.hostGatewayHost,
@@ -84,16 +89,37 @@ export const startTestRunner = async (
     sandboxExtraHosts: [`${opts.config.hostGatewayHost}:host-gateway`],
     orphanReap: opts.orphanReap ?? true,
     orphanGraceSeconds: opts.orphanGraceSeconds ?? 3600,
+    createos: {
+      baseUrl: opts.config.createos.baseUrl,
+      apiKey: opts.config.createos.apiKey,
+      network: opts.config.createos.network,
+      homesDir: opts.config.createos.homesDir,
+      shape: "",
+      extraEgress: [],
+      autoPauseSeconds: 0,
+    },
   };
 
-  const backend = createDockerBackend({
-    runnerId: randomUUID(),
-    installationId: installationFingerprint(runnerConfig.token),
-    network: runnerConfig.sandboxNetwork,
-    networkInternal: runnerConfig.networkInternal,
-    socketPath: runnerConfig.dockerSocket,
-    extraHosts: runnerConfig.sandboxExtraHosts,
-  });
+  const localBackendId = randomUUID();
+  const installationId = installationFingerprint(runnerConfig.token);
+  const backend =
+    opts.config.backend === "createos"
+      ? createCreateosBackend({
+          runnerId: localBackendId,
+          installationId,
+          baseUrl: runnerConfig.createos.baseUrl,
+          apiKey: runnerConfig.createos.apiKey,
+          network: sandboxNetwork,
+          homesDir: runnerConfig.createos.homesDir,
+        })
+      : createDockerBackend({
+          runnerId: localBackendId,
+          installationId,
+          network: runnerConfig.sandboxNetwork,
+          networkInternal: runnerConfig.networkInternal,
+          socketPath: runnerConfig.dockerSocket,
+          extraHosts: runnerConfig.sandboxExtraHosts,
+        });
 
   const controlPlane = createControlPlaneClient({
     baseUrl: runnerConfig.controlPlaneUrl,
@@ -111,10 +137,8 @@ export const startTestRunner = async (
   };
   const collector = createTurnEventCollector({ post: report });
 
-  let sendToSandbox: (sandboxId: string, item: WorkItem) => boolean = () =>
-    false;
-  let containerRefOf: (sandboxId: string) => string | undefined = () =>
-    undefined;
+  let sendToSandbox: (sandboxId: string, item: WorkItem) => boolean = () => false;
+  let containerRefOf: (sandboxId: string) => string | undefined = () => undefined;
   const wsServer = createRunnerWsServer({
     port: wsPort,
     onMessage: createSupervisorMessageHandler({

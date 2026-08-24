@@ -24,6 +24,15 @@ export interface HostedE2EConfig {
    * runner's ExtraHosts `host-gateway` entry (set alongside this).
    */
   readonly hostGatewayHost: string;
+  /** Which SandboxBackend the in-process runner spawns real sandboxes on. */
+  readonly backend: "docker" | "createos";
+  /** Only read when `backend` is "createos". */
+  readonly createos: {
+    readonly baseUrl: string;
+    readonly apiKey: string;
+    readonly network: string;
+    readonly homesDir: string;
+  };
 }
 
 const read = (name: string): string | undefined => {
@@ -32,8 +41,7 @@ const read = (name: string): string | undefined => {
 };
 
 const WHY: Readonly<Record<string, string>> = {
-  E2E_ADMIN_DATABASE_URL:
-    "the maintenance connection used to clone a database per test",
+  E2E_ADMIN_DATABASE_URL: "the maintenance connection used to clone a database per test",
   E2E_TEMPLATE_DB: "the migrated template database each test clones",
 };
 
@@ -62,12 +70,31 @@ const resolve = (): HostedE2EConfig | null => {
     return null;
   }
 
+  // Same names the production runner reads (config.ts) — these are physical
+  // CreateOS account values, not e2e-specific, unlike hostGatewayHost above.
+  const backend = read("E2E_RUNNER_BACKEND") === "createos" ? "createos" : "docker";
+  const createosBaseUrl =
+    read("RUNNER_CREATEOS_BASE_URL") ?? read("CREATEOS_SANDBOX_BASE_URL") ?? "";
+  const createosApiKey = read("RUNNER_CREATEOS_API_KEY") ?? read("CREATEOS_SANDBOX_API_KEY") ?? "";
+  if (backend === "createos" && (!createosBaseUrl || !createosApiKey)) {
+    throw new Error(
+      "E2E_RUNNER_BACKEND=createos needs RUNNER_CREATEOS_BASE_URL and RUNNER_CREATEOS_API_KEY.",
+    );
+  }
+
   return {
     adminDatabaseUrl,
     templateDb,
     agentImage: read("E2E_AGENT_IMAGE") ?? "onecli-agent:dev",
     dockerSocket: read("E2E_DOCKER_SOCKET") ?? "/var/run/docker.sock",
     hostGatewayHost: read("E2E_HOST_GATEWAY_HOST") ?? "host.docker.internal",
+    backend,
+    createos: {
+      baseUrl: createosBaseUrl,
+      apiKey: createosApiKey,
+      network: read("RUNNER_CREATEOS_NETWORK") ?? "onecli-he2e",
+      homesDir: read("RUNNER_CREATEOS_HOMES_DIR") ?? "/var/lib/onecli/he2e-homes",
+    },
   };
 };
 
