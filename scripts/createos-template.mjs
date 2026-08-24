@@ -3,32 +3,33 @@
  * Build the agent rootfs template the CreateOS backend spawns from.
  *
  * This is `pnpm agent:build` for the other substrate, and it cannot simply
- * send `docker/agent.Dockerfile`. CreateOS bakes a rootfs with rootless
- * buildah and validates the Dockerfile at submit time, which rules out almost
- * everything that file does (fc internal/builder/dockerfile.go):
+ * send `docker/agent.Dockerfile` — that file is a 7-stage, multi-COPY build,
+ * and CreateOS's builder validates the Dockerfile at submit time
+ * (fc internal/builder/dockerfile.go):
  *
  *   - exactly ONE `FROM`, and only from `nodeops/sandbox:debian` or `:alpine`
  *   - `COPY` and `ADD` are rejected outright — there is no build context
  *   - `CMD` / `ENTRYPOINT` are rejected; a bare-metal sandbox boots its own
- *     PID 1, so an image entrypoint would never run anyway
+ *     init, so an image entrypoint (`tini`, in the Docker image) is dead
+ *     weight rather than something to replicate
  *   - 5 GB final rootfs, 10 minute build timeout
  *
- * So the agent arrives over the network instead of over a build context: CI
- * exports the already-built agent image as a filesystem tarball, and the
- * template's single `RUN` unpacks it. The build pod has ordinary internet
- * access — the per-sandbox egress allowlist applies to sandboxes, not builds.
+ * So this generates a DIFFERENT Dockerfile: one `FROM`, then `RUN` steps that
+ * perform the same three things the multi-stage build did — install Node,
+ * clone this repo and build the supervisor, vendor the checksum-verified
+ * jcode runtime — using only the instructions CreateOS allows (FROM, RUN,
+ * ENV, ARG, USER). The build pod has ordinary internet access; the
+ * per-sandbox egress allowlist applies to sandboxes, not builds.
  *
- *   pnpm agent:template <rootfs-tarball-url> [name]
+ *   pnpm agent:template [name] [git-ref]
  *
- * The tarball is produced by `docker export` of the agent image. Until the
- * release workflow publishes one, pass any URL serving that artifact.
+ * `git-ref` (default `main`) is what the template's build step clones —
+ * pass the branch under test, e.g. `feat/createos-sandbox-backend`.
  */
 import { createClient } from "@nodeops-createos/sandbox";
 
 const baseUrl = process.env.RUNNER_CREATEOS_BASE_URL ?? process.env.CREATEOS_SANDBOX_BASE_URL;
 const apiKey = process.env.RUNNER_CREATEOS_API_KEY ?? process.env.CREATEOS_SANDBOX_API_KEY;
-
-const [artifactUrl, requestedName] = process.argv.slice(2);
 
 if (!baseUrl || !apiKey) {
   console.error(
@@ -36,47 +37,121 @@ if (!baseUrl || !apiKey) {
   );
   process.exit(2);
 }
-if (!artifactUrl) {
-  console.error(
-    "Usage: pnpm agent:template <rootfs-tarball-url> [name]\n\n" +
-      "The tarball is `docker export` of the agent image, zstd-compressed.",
-  );
-  process.exit(2);
-}
 
+const [requestedName, gitRef] = process.argv.slice(2);
 // Immutable by name: the control plane keeps the latest READY template per
 // name, and running sandboxes hold a resolved id. A new agent build takes a
 // new name so a rebuild can never change what an existing sandbox spawned from.
 const name = requestedName ?? `onecli-agent-${Date.now()}`;
+const ref = gitRef ?? "main";
 
-/**
- * `/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf` stay as the base image
- * wrote them. The exported tarball carries whatever Docker generated for the
- * container it came from, and those three would break DNS inside the VM.
- */
+// Same jcode pin as docker/agent.Dockerfile — kept in sync by hand; both are
+// the ONE place jcode's version and checksums are named.
+const JCODE_VERSION = "v0.71.1";
+const JCODE_SHA256 = {
+  amd64: "fb2af63f1df5aecc6e9185d1f88be5ec634578d30081af7db68486bc8283f76b",
+  arm64: "bbd3bcd62cf67f89b7923960cda0fd8cc2129f6347d5e9904b7506e46c884d86",
+};
+
+// Identical to docker/agent-entrypoint.sh. Embedded rather than fetched: the
+// template build has no COPY, and fetching this one small file over the
+// network for every build is not worth a second source of truth to keep in
+// sync — this literal IS the sync point, kept byte-for-byte with the file.
+const ENTRYPOINT_SH = `#!/bin/sh
+set -e
+
+# Entrypoint for the agent sandbox image (docker/agent.Dockerfile).
+#
+# Rootless CA trust: the gateway's MITM CA arrives as a mounted file (the
+# container-config payload names it in NODE_EXTRA_CA_CERTS). Inside the
+# sandbox every TLS handshake presents the gateway's certificate — egress is
+# gateway-only (§3.4) — so this one CA is the only trust anyone needs:
+# - NODE_EXTRA_CA_CERTS: the supervisor's Node runtime (set by the payload).
+# - SSL_CERT_FILE: the jcode runtime (rustls-native-certs honors it; verified).
+# - CURL_CA_BUNDLE / GIT_SSL_CAINFO: the agent's common tools.
+# System-store installation (update-ca-certificates, needs root) arrives with
+# step 3's runner-controlled spawn.
+CA_FILE="\${NODE_EXTRA_CA_CERTS:-/tmp/onecli-gateway-ca.pem}"
+if [ -f "$CA_FILE" ]; then
+  export SSL_CERT_FILE="$CA_FILE"
+  export CURL_CA_BUNDLE="$CA_FILE"
+  export GIT_SSL_CAINFO="$CA_FILE"
+else
+  echo "agent-entrypoint: no CA file at $CA_FILE — TLS through the gateway will fail" >&2
+fi
+
+exec node apps/sandbox-supervisor/dist/index.mjs
+`;
+
 const dockerfile = `FROM nodeops/sandbox:debian
-# Everything the agent needs already lives in the exported image: the Node
-# runtime, the supervisor bundle, node_modules, the pinned jcode, and the
-# entrypoint script. zstd is added here because the CreateOS backend carries
-# the agent's home in and out as a compressed archive on every start and stop.
+
 RUN apt-get update \\
-  && apt-get install -y --no-install-recommends ca-certificates curl zstd \\
+  && apt-get install -y --no-install-recommends curl ca-certificates git ripgrep zstd gnupg \\
   && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL ${JSON.stringify(artifactUrl)} \\
-  | tar -x -I zstd -C / \\
-    --exclude=./etc/hostname --exclude=./etc/hosts --exclude=./etc/resolv.conf
-# The image runs as \`node\` and the backend's launcher drops to it. The user
-# arrives with the tarball's /etc/passwd; this only covers a base that already
-# defines it.
+
+# Node 22 via NodeSource, not apt: Debian's own nodejs package version tracks
+# the release, not a pinned major — this repo's engines field needs >=22.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \\
+  && apt-get install -y --no-install-recommends nodejs \\
+  && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable
+
+RUN git clone --depth 1 --branch ${ref} https://github.com/NodeOps-app/onecli /app
+WORKDIR /app
+# corepack resolves the exact pinned version from package.json's
+# packageManager field on its own — nothing to pin here.
+RUN corepack pnpm install --frozen-lockfile
+RUN corepack pnpm build --filter=@onecli/sandbox-supervisor
+RUN echo "node-linker=hoisted" >> .npmrc
+
+ARG TARGETARCH=amd64
+ARG JCODE_VERSION=${JCODE_VERSION}
+RUN case "$TARGETARCH" in \\
+      amd64) ASSET="jcode-linux-x86_64"; SHA=${JSON.stringify(JCODE_SHA256.amd64)};; \\
+      arm64) ASSET="jcode-linux-aarch64"; SHA=${JSON.stringify(JCODE_SHA256.arm64)};; \\
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1;; \\
+    esac \\
+  && curl -fsSL -o /tmp/jcode.tar.gz \\
+    "https://github.com/1jehuang/jcode/releases/download/\${JCODE_VERSION}/\${ASSET}.tar.gz" \\
+  && echo "\${SHA}  /tmp/jcode.tar.gz" | sha256sum -c - \\
+  && mkdir -p /opt/jcode \\
+  && tar -xzf /tmp/jcode.tar.gz -C /opt/jcode \\
+  && for f in /opt/jcode/*; do \\
+       case "$f" in \\
+         "/opt/jcode/\${ASSET}"|"/opt/jcode/\${ASSET}.bin") ;; \\
+         *) echo "unexpected file in jcode release: $f" >&2; exit 1;; \\
+       esac; \\
+     done \\
+  && mv "/opt/jcode/\${ASSET}" /opt/jcode/jcode \\
+  && chown -R root:root /opt/jcode \\
+  && chmod 0755 /opt/jcode/* \\
+  && rm /tmp/jcode.tar.gz
+RUN JCODE_NO_AUTO_UPDATE=1 JCODE_NO_TELEMETRY=1 /opt/jcode/jcode --version | grep -F "jcode \${JCODE_VERSION} "
+
+# No COPY: the entrypoint script arrives base64-encoded on the RUN command
+# line instead. Byte-for-byte docker/agent-entrypoint.sh — see that file's
+# own comments for why the CA handling looks the way it does.
+RUN echo ${JSON.stringify(Buffer.from(ENTRYPOINT_SH, "utf8").toString("base64"))} | base64 -d > /app/agent-entrypoint.sh \\
+  && chmod +x /app/agent-entrypoint.sh
+
 RUN id -u node >/dev/null 2>&1 || useradd -m -u 1000 node
-RUN test -x /app/agent-entrypoint.sh \\
-  && test -x /opt/jcode/jcode \\
-  && command -v zstd >/dev/null
+RUN mkdir -p /workspace && chown node:node /workspace
+
+ENV NODE_ENV=production
+ENV NO_COLOR=1
+ENV FORCE_COLOR=0
+ENV JCODE_NO_TELEMETRY=1
+ENV JCODE_NO_AUTO_UPDATE=1
+ENV NODE_OPTIONS=--enable-source-maps
+ENV ONECLI_JCODE_BINARY=/opt/jcode/jcode
+
+USER node
 `;
 
 const client = createClient({ baseUrl, apiKey });
 
-console.log(`Building CreateOS template "${name}"`);
+console.log(`Building CreateOS template "${name}" from ${ref}`);
 const template = await client.templates.create({ name, dockerfile });
 
 // The build is asynchronous and the control plane keeps the full log only on
@@ -88,7 +163,7 @@ for await (const event of client.templates.followLogs(template.id)) {
 }
 
 if (status !== "ready") {
-  const built = await client.templates.get(template.id);
+  const built = await client.templates.get(template.id, { include: "dockerfile" });
   if (built.status !== "ready") {
     console.error(`\nTemplate build ${built.status}. See the log above.`);
     process.exit(1);
