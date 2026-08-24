@@ -25,8 +25,13 @@ export default async function setup(): Promise<() => Promise<void>> {
   const config = e2eConfig();
   if (config === null) return async () => undefined;
 
-  await assertDockerReady(config.agentImage);
-  await sweepStaleRuns();
+  // Docker hygiene only applies to the docker backend — a createos run has
+  // no daemon to check and no containers/volumes/networks to sweep; its
+  // sandboxes and homes are swept by the runner's own orphan sweep instead.
+  if (config.backend === "docker") {
+    await assertDockerReady(config.agentImage);
+    await sweepStaleRuns();
+  }
 
   const admin = new PrismaClient({ datasourceUrl: config.adminDatabaseUrl });
 
@@ -39,9 +44,7 @@ export default async function setup(): Promise<() => Promise<void>> {
       .catch(() => undefined);
   }
   if (stale.length > 0) {
-    console.warn(
-      `swept ${String(stale.length)} database(s) left by an earlier run`,
-    );
+    console.warn(`swept ${String(stale.length)} database(s) left by an earlier run`);
   }
 
   await allowConnections(admin, config.templateDb, true);
@@ -50,9 +53,9 @@ export default async function setup(): Promise<() => Promise<void>> {
   templateUrl.pathname = `/${config.templateDb}`;
   const template = new PrismaClient({ datasourceUrl: templateUrl.toString() });
   try {
-    const rows = await template.$queryRawUnsafe<
-      Array<{ present: string | null }>
-    >(`SELECT to_regclass('public.workspaces')::text AS present`);
+    const rows = await template.$queryRawUnsafe<Array<{ present: string | null }>>(
+      `SELECT to_regclass('public.workspaces')::text AS present`,
+    );
     if (rows[0]?.present == null) {
       throw new Error(
         `the template database "${config.templateDb}" exists but has no schema. Migrate it:\n` +
