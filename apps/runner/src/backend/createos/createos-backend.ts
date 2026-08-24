@@ -37,11 +37,14 @@ import { log } from "../../log";
  *    default that opens it: a payload without a parseable proxy is refused.
  *    CreateOS enforces the list in the host kernel (iptables per-VM chain),
  *    so an agent that unsets its own proxy env still reaches nothing.
- * 2. **The runner is reached over the overlay, not the internet.** Overlay
- *    membership is an eBPF `(src, dst)` pair allowlist, evaluated before the
- *    egress chain, so the control channel needs no allowlist entry and no
- *    public port. Two VMs that do not share a network cannot reach each other
- *    at all, regardless of what either one's egress list says.
+ * 2. **The runner is reached over the overlay, not the internet.** Two VMs
+ *    that do not share a network cannot reach each other at all, regardless
+ *    of what either one's egress list says. But shared membership is only
+ *    half the requirement: the egress allowlist is NOT bypassed for overlay
+ *    peers. A sandbox with a non-empty `egress` drops peer traffic unless the
+ *    peer's `host:port` is a rule. Both halves must hold, so `RUNNER_WS_URL`
+ *    is derived into the allowlist next to the proxy. Measured on live
+ *    sandboxes; see `docs/createos-networking.md`.
  *
  * The container hardening the Docker backend spells out (`CapDrop: ALL`,
  * `no-new-privileges`, `PidsLimit`) has no counterpart here, and needs none.
@@ -142,6 +145,19 @@ export const renderEnvFile = (env: Record<string, string>): string => {
  * allowlist can never drift from the proxy the agent was told to use, and
  * there is no "allow all" default anyone can leave in place by accident.
  */
+const authorityOf = (raw: string, what: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      `spawn payload's ${what} is unparseable, so the egress allowlist cannot be derived — refusing to create a sandbox with unrestricted egress`,
+    );
+  }
+  const secure = parsed.protocol === "https:" || parsed.protocol === "wss:";
+  return `${parsed.hostname}:${parsed.port || (secure ? "443" : "80")}`;
+};
+
 export const deriveEgress = (
   env: Record<string, string>,
   extra: readonly string[] = [],
@@ -152,16 +168,13 @@ export const deriveEgress = (
       "spawn payload carries no proxy URL, so the sandbox's egress allowlist cannot be derived — refusing to create a sandbox with unrestricted egress",
     );
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
+  const ws = env.RUNNER_WS_URL;
+  if (!ws) {
     throw new Error(
-      `spawn payload's proxy URL is unparseable, so the egress allowlist cannot be derived — refusing to create a sandbox with unrestricted egress`,
+      "spawn payload carries no RUNNER_WS_URL, so the control channel cannot be allowlisted — the sandbox would start and never reach the runner",
     );
   }
-  const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
-  const rules = [`${parsed.hostname}:${port}`, ...extra];
+  const rules = [authorityOf(raw, "proxy URL"), authorityOf(ws, "RUNNER_WS_URL"), ...extra];
   // `*` anywhere means allow-all to CreateOS's rule parser, which would
   // silently undo the whole boundary. An operator who wants that must not get
   // it by typo.

@@ -204,6 +204,7 @@ const spec = (overrides: Partial<SandboxSpec> = {}): SandboxSpec => ({
   image: "onecli-agent-template",
   env: {
     HTTPS_PROXY: "http://x:aoc_token@gateway.example.com:10255",
+    RUNNER_WS_URL: "ws://10.0.4.92:10256",
     SANDBOX_WS_TOKEN: "single-use",
   },
   files: [{ containerPath: "/tmp/ca.pem", content: "CERT", mode: 0o600 }],
@@ -250,22 +251,37 @@ describe("labels", () => {
 });
 
 describe("deriveEgress", () => {
+  const WS = "ws://10.0.4.92:10256";
+
   it("pins the allowlist to the gateway from the payload", () => {
-    expect(deriveEgress({ HTTPS_PROXY: "http://x:tok@gateway.example.com:10255" })).toEqual([
-      "gateway.example.com:10255",
-    ]);
+    expect(
+      deriveEgress({ HTTPS_PROXY: "http://x:tok@gateway.example.com:10255", RUNNER_WS_URL: WS }),
+    ).toEqual(["gateway.example.com:10255", "10.0.4.92:10256"]);
   });
 
   it("defaults the port from the scheme", () => {
-    expect(deriveEgress({ HTTPS_PROXY: "https://gw.example.com" })).toEqual(["gw.example.com:443"]);
+    expect(
+      deriveEgress({
+        HTTPS_PROXY: "https://gw.example.com",
+        RUNNER_WS_URL: "wss://ctl.example.com",
+      }),
+    ).toEqual(["gw.example.com:443", "ctl.example.com:443"]);
   });
 
   it("refuses a payload with no proxy rather than allowing all egress", () => {
-    expect(() => deriveEgress({})).toThrow(/unrestricted egress/);
+    expect(() => deriveEgress({ RUNNER_WS_URL: WS })).toThrow(/unrestricted egress/);
+  });
+
+  // The overlay does not bypass the egress chain: without this rule the
+  // sandbox boots and silently never reaches the runner.
+  it("refuses a payload with no control-channel URL", () => {
+    expect(() => deriveEgress({ HTTPS_PROXY: "http://gw:1" })).toThrow(/RUNNER_WS_URL/);
   });
 
   it("refuses a wildcard rule, which CreateOS reads as allow-all", () => {
-    expect(() => deriveEgress({ HTTPS_PROXY: "http://gw:1" }, ["*"])).toThrow(/allow-all/);
+    expect(() => deriveEgress({ HTTPS_PROXY: "http://gw:1", RUNNER_WS_URL: WS }, ["*"])).toThrow(
+      /allow-all/,
+    );
   });
 });
 
@@ -364,7 +380,7 @@ describe("createos backend", () => {
     );
 
     const view = fake.vms.get(ref)!.view;
-    expect(view.egress).toEqual(["gateway.example.com:10255"]);
+    expect(view.egress).toEqual(["gateway.example.com:10255", "10.0.4.92:10256"]);
   });
 
   it("keeps the single-use token out of the CreateOS env map", async () => {
@@ -500,7 +516,7 @@ describe("createos backend", () => {
       backend.createSandbox(
         spec({
           homeRef: await backend.provisionHome(spec().sandboxId),
-          env: { HTTPS_PROXY: "http://gw:1", "BAD-NAME": "x" },
+          env: { HTTPS_PROXY: "http://gw:1", RUNNER_WS_URL: "ws://gw:2", "BAD-NAME": "x" },
         }),
       ),
     ).rejects.toThrow(/POSIX identifier/);
