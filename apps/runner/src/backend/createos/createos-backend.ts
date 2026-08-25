@@ -575,7 +575,12 @@ export const createCreateosBackend = (options: CreateosBackendOptions): SandboxB
       // wake path calls stopSandbox on the very VM it parked earlier, so
       // treating that 409 as a failure makes a parked agent impossible to
       // wake. Its home was already harvested by the pause that parked it.
-      if (sandbox.status === "paused") return;
+      //
+      // `pausing` counts too. A pause is not instant, and a VM caught midway
+      // refuses both a pause and an exec ("409 sandbox is pausing; resume
+      // first"), so a harvest attempt there fails as loudly as a second
+      // pause would.
+      if (sandbox.status === "paused" || sandbox.status === "pausing") return;
       if (sandbox.status === "running") {
         try {
           await harvestHome(sandbox);
