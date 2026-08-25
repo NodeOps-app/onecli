@@ -279,3 +279,31 @@ which is already there. Write `detach --yes <net> <box>`.
 4. **`network detach` needs `--yes` before its positional arguments.**
    Putting it after gives the error "pass --yes to confirm detach" while
    `--yes` is present on the line.
+5. **`createos sandbox resume` fails with "Content-Length is required".**
+   The CLI sends `POST /v1/sandboxes/<id>/resume` with
+   `Content-Type: application/json` and no body, so the request carries no
+   `Content-Length`, and the server rejects it. The same call with an empty
+   JSON body succeeds:
+
+   ```bash
+   curl -X POST "https://api.sb.createos.sh/v1/sandboxes/<id>/resume" \
+     -H "X-Access-Token: $TOKEN" -H "Content-Type: application/json" -d '{}'
+   ```
+
+   Either send a body from the CLI or stop requiring the header.
+
+## Auto-pause counts API traffic, not work
+
+A sandbox with `auto_pause_after_seconds` set pauses while a long job is
+still running inside it. Busy CPU does not keep it awake. This truncated a
+full test run twice in one session, and the failure looks like the job
+simply stopping.
+
+Turn it off for any box that does long work:
+
+```bash
+createos sandbox edit <sandbox> --auto-pause off
+```
+
+The onecli backend already creates agent sandboxes with auto-pause at 0,
+so agents are not exposed to this. It matters for a human's own box.
