@@ -508,14 +508,6 @@ export const createCreateosBackend = (options: CreateosBackendOptions): SandboxB
     async startSandbox(ref) {
       const sandbox = await connect(ref);
       if (!sandbox) throw new Error(`sandbox ${ref} no longer exists`);
-      // `stopSandbox` parks a VM by pausing it, so a wake arrives here with a
-      // paused VM and every exec below would 409 ("sandbox is paused,
-      // expected running"). Resuming restores the disk, the running process
-      // table, and the egress allowlist — but NOT the IP address, which is
-      // reassigned on every resume. Nothing here may cache that address.
-      if (sandbox.status === "paused") {
-        await sandbox.resume();
-      }
       // The template bakes /workspace as node:node (docker/agent.Dockerfile's
       // own rule), but CreateOS's own build-to-rootfs conversion resets it to
       // root:root — confirmed by inspecting a live VM, not assumed. Restoring
@@ -538,6 +530,12 @@ export const createCreateosBackend = (options: CreateosBackendOptions): SandboxB
       const sandbox = await connect(ref);
       // Nothing to stop is the desired end state, not an error.
       if (!sandbox) return;
+      // Neither is an already-parked VM. The control plane refuses a second
+      // pause outright ("409 sandbox is paused, expected running"), and the
+      // wake path calls stopSandbox on the very VM it parked earlier, so
+      // treating that 409 as a failure makes a parked agent impossible to
+      // wake. Its home was already harvested by the pause that parked it.
+      if (sandbox.status === "paused") return;
       if (sandbox.status === "running") {
         try {
           await harvestHome(sandbox);

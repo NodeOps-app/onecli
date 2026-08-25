@@ -123,11 +123,17 @@ const createFakeClient = () => {
         return { result: { stdout: "", stderr: "", exit_code: 0 }, exec_ms: 1 };
       },
       async pause() {
+        // The real control plane refuses to pause a VM that is already
+        // paused. Modelling it is the only way a test can catch a stop path
+        // that pauses unconditionally.
+        if (vm.view.status === "paused") {
+          throw apiError(
+            CreateosSandboxValidationError,
+            409,
+            "sandbox is paused, expected running",
+          );
+        }
         vm.view = { ...vm.view, status: "paused" };
-        return sandbox;
-      },
-      async resume() {
-        vm.view = { ...vm.view, status: "running" };
         return sandbox;
       },
       async destroy() {
@@ -429,10 +435,11 @@ describe("createos backend", () => {
     ).toBe(true);
   });
 
-  it("resumes a parked VM before starting it again", async () => {
-    // stopSandbox parks a VM by pausing it. A wake then arrives with a paused
-    // VM, and the real control plane 409s every exec against one. Without a
-    // resume, the whole sleep-wake path fails.
+  it("treats parking an already-parked VM as done, not as an error", async () => {
+    // The wake path calls stopSandbox on the VM it parked earlier, before
+    // destroying and recreating it. The control plane rejects a second pause
+    // with "409 sandbox is paused, expected running", so a stopSandbox that
+    // pauses unconditionally makes a parked agent impossible to wake.
     const backend = backendFor();
     await backend.prepare();
     backend.identify("runner-a");
@@ -443,8 +450,8 @@ describe("createos backend", () => {
     await backend.stopSandbox(ref);
     expect(fake.vms.get(ref)!.view.status).toBe("paused");
 
-    await expect(backend.startSandbox(ref)).resolves.toBeUndefined();
-    expect(fake.vms.get(ref)!.view.status).toBe("running");
+    await expect(backend.stopSandbox(ref)).resolves.toBeUndefined();
+    await expect(backend.removeSandbox(ref)).resolves.toBeUndefined();
   });
 
   it("carries the home across the destroy-and-recreate every start does", async () => {
