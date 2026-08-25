@@ -5,6 +5,7 @@ import { createDockerBackend } from "@onecli/runner/backend/docker";
 import { installationFingerprint } from "@onecli/runner/installation";
 import { scenario } from "../src/scenario.js";
 import { seedTenant } from "../src/fixtures.js";
+import { orphanExists, plantOrphan } from "../src/sandbox-control.js";
 
 const exec = promisify(execFile);
 
@@ -21,26 +22,15 @@ scenario(
   "the sweep reaps a dead runner's leftovers, spares the known",
   async (cx) => {
     const ghostSandboxId = `he2e-${cx.ids.nonce}-ghost`;
-    const ghostContainer = `onecli-sandbox-${ghostSandboxId}`;
-    const ghostVolume = `onecli-home-${ghostSandboxId}`;
-    const labels = [
-      `--label=${MANAGED}`,
-      `--label=sh.onecli.sandbox-id=${ghostSandboxId}`,
-      `--label=sh.onecli.runner-id=r-dead-${cx.ids.nonce}`,
-      // THIS install, dead runner id — the canonical orphan (a DB reset
-      // minted a fresh runner id but the token, hence the fingerprint, held).
-      `--label=sh.onecli.installation=${installationFingerprint(cx.ids.runnerToken)}`,
-    ];
-    // Plant the corpse a dead runner id left behind: a created-never-started
-    // container and its home volume, both platform-labeled.
-    await exec("docker", ["volume", "create", ...labels, ghostVolume]);
-    await exec("docker", [
-      "create",
-      `--name=${ghostContainer}`,
-      ...labels,
-      cx.config.agentImage,
-      "true",
-    ]);
+    // Plant the corpse a dead runner id left behind — THIS install, dead
+    // runner id: the canonical orphan (a DB reset minted a fresh runner id
+    // but the token, hence the fingerprint, held).
+    const orphan = await plantOrphan(cx.config, {
+      sandboxId: ghostSandboxId,
+      runnerId: `r-dead-${cx.ids.nonce}`,
+      installationId: installationFingerprint(cx.ids.runnerToken),
+      agentImage: cx.config.agentImage,
+    });
 
     const stack = await cx.startStack({ orphanGraceSeconds: 1 });
     if (stack.runner === null) throw new Error("runner expected");
@@ -50,20 +40,7 @@ scenario(
     await new Promise((r) => setTimeout(r, 1_500));
     await stack.runner.reconcile();
 
-    const container = await exec("docker", ["inspect", ghostContainer]).then(
-      () => "present",
-      () => "gone",
-    );
-    const volume = await exec("docker", [
-      "volume",
-      "inspect",
-      ghostVolume,
-    ]).then(
-      () => "present",
-      () => "gone",
-    );
-    expect(container).toBe("gone");
-    expect(volume).toBe("gone");
+    expect(await orphanExists(cx.config, orphan)).toBe(false);
   },
 );
 

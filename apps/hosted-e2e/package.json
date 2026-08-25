@@ -12,6 +12,7 @@
     "lint:fix": "eslint --fix --max-warnings 0"
   },
   "dependencies": {
+    "@nodeops-createos/sandbox": "0.8.1",
     "@onecli/agent-protocol": "workspace:*",
     "@onecli/api": "workspace:*",
     "@onecli/db": "workspace:*",

@@ -17,7 +17,7 @@ export const dockerExec = async (
   exec("docker", ["exec", container, ...cmd]);
 
 export const dockerKill = async (container: string): Promise<void> => {
-  await exec("docker", ["kill", container]).catch(() => {});
+  await exec("docker", ["kill", container]);
 };
 
 export const dockerRm = async (container: string): Promise<void> => {

@@ -12,6 +12,7 @@
     "./turn-events": "./src/turn-events.ts",
     "./supervisor-messages": "./src/supervisor-messages.ts",
     "./backend/createos": "./src/backend/createos/createos-backend.ts",
+    "./backend/createos/labels": "./src/backend/createos/labels.ts",
     "./backend/docker": "./src/backend/docker/docker-backend.ts",
     "./ws/server": "./src/ws/server.ts"
   },

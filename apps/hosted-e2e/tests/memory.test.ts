@@ -1,12 +1,16 @@
 import { expect } from "vitest";
 import { scenario } from "../src/scenario.js";
-import { containerNameFor, dockerExec, dockerKill } from "../src/docker.js";
 import {
   seedAnthropicGrant,
   seedHostedAgent,
   seedTenant,
 } from "../src/fixtures.js";
 import { fakeDirective, sleep, text } from "../src/fake-dsl.js";
+import {
+  killSandboxHard,
+  sandboxReachable,
+  writeFileInSandbox,
+} from "../src/sandbox-control.js";
 import { runTurn, waitFor } from "../src/v1.js";
 
 /**
@@ -42,16 +46,16 @@ scenario(
     const boot = await runTurn(stack.v1, conversation.id, "wake up");
     expect(boot.status).toBe("done");
 
-    const container = containerNameFor(cx.ids.sandbox);
-    await dockerExec(container, [
-      "sh",
-      "-c",
-      "mkdir -p /workspace/memory && printf 'the sky was green today' > /workspace/memory/observation.md",
-    ]);
+    await writeFileInSandbox(
+      cx.config,
+      cx.ids.sandbox,
+      "/workspace/memory/observation.md",
+      "the sky was green today",
+    );
     // KILL right away — whether the 1.5s harvester got there first or not, the
     // write must reach the platform: immediately, or via the next boot's
     // harvest off the durable volume. Either path is a pass; losing it is not.
-    await dockerKill(container);
+    await killSandboxHard(cx.config, cx.ids.sandbox);
 
     // The next message respawns the box; the boot harvest delivers the file.
     await runTurn(stack.v1, conversation.id, "and again");
@@ -98,21 +102,17 @@ scenario(
         message: fakeDirective([sleep(8_000), text("held the door open")]),
       },
     );
-    const container = containerNameFor(cx.ids.sandbox);
     await waitFor(
-      () =>
-        dockerExec(container, ["true"]).then(
-          () => true,
-          () => false,
-        ),
+      () => sandboxReachable(cx.config, cx.ids.sandbox),
       (up) => up,
       "the container to come up",
     );
-    await dockerExec(container, [
-      "sh",
-      "-c",
-      "mkdir -p /workspace/memory && printf 'delete me later' > /workspace/memory/ephemeral.md",
-    ]);
+    await writeFileInSandbox(
+      cx.config,
+      cx.ids.sandbox,
+      "/workspace/memory/ephemeral.md",
+      "delete me later",
+    );
     await holdOpen;
     const harvested = await waitFor(
       async () =>

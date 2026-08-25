@@ -1,6 +1,5 @@
 import { expect } from "vitest";
 import { scenario } from "../src/scenario.js";
-import { containerNameFor, dockerKill } from "../src/docker.js";
 import {
   seedAnthropicGrant,
   seedHostedAgent,
@@ -8,6 +7,7 @@ import {
 } from "../src/fixtures.js";
 import { fakeDirective, sleep, text } from "../src/fake-dsl.js";
 import { startTestRunner } from "../src/runner.js";
+import { killSandboxHard } from "../src/sandbox-control.js";
 import {
   fetchTranscript,
   readTurn,
@@ -102,7 +102,7 @@ scenario(
       "the doomed turn to start",
     );
 
-    await dockerKill(containerNameFor(cx.ids.sandbox));
+    await killSandboxHard(cx.config, cx.ids.sandbox);
 
     // A SIGKILL'd container reports nothing — RECONCILE is the detection path
     // (the #834 dead-but-expected arm; 60s cadence in production, driven by
