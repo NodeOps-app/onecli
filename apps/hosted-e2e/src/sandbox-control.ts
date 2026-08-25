@@ -3,21 +3,14 @@ import { posix } from "node:path";
 import { promisify } from "node:util";
 import {
   createClient,
+  CreateosSandboxApiError,
   CreateosSandboxNotFoundError,
   type Sandbox,
 } from "@nodeops-createos/sandbox";
 import { fetchWithContentLength, pickShape } from "@onecli/runner/backend/createos";
-import {
-  buildLabels,
-  decodeLabel,
-} from "@onecli/runner/backend/createos/labels";
+import { buildLabels, decodeLabel } from "@onecli/runner/backend/createos/labels";
 import type { HostedE2EConfig } from "./env.js";
-import {
-  containerNameFor,
-  dockerExec,
-  dockerKill,
-  volumeNameFor,
-} from "./docker.js";
+import { containerNameFor, dockerExec, dockerKill, volumeNameFor } from "./docker.js";
 
 const exec = promisify(execFile);
 
@@ -29,8 +22,7 @@ const exec = promisify(execFile);
  * `docker` CLI behavior, unchanged.
  */
 
-const shellQuote = (value: string): string =>
-  `'${value.replaceAll("'", `'\\''`)}'`;
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
 
 const createosClient = (config: HostedE2EConfig) =>
   createClient({
@@ -51,11 +43,38 @@ const findCreateosSandbox = async (
     (sandbox) => decodeLabel(sandbox.data.envs ?? [], "sandbox") === sandboxId,
   );
   if (!match) {
-    throw new Error(
-      `no CreateOS sandbox is labeled with sandbox id ${sandboxId}`,
-    );
+    throw new Error(`no CreateOS sandbox is labeled with sandbox id ${sandboxId}`);
   }
   return match;
+};
+
+/**
+ * A CreateOS pause is not instant. A VM caught midway answers every exec with
+ * `409 sandbox is pausing; resume first`, and settles a moment later. Docker
+ * has no such limbo — a container is up or it is not — so a test written
+ * against docker has no reason to expect it. Ride the transient state out
+ * rather than making every caller know about it.
+ */
+const PAUSING_RETRY_MS = 15_000;
+
+const execRidingOutAPause = async (
+  sandbox: Sandbox,
+  args: string[],
+): Promise<{ exit_code: number; stderr: string }> => {
+  const deadline = Date.now() + PAUSING_RETRY_MS;
+  for (;;) {
+    try {
+      const { result } = await sandbox.runCommand("sh", args);
+      return result;
+    } catch (error) {
+      const pausing =
+        error instanceof CreateosSandboxApiError &&
+        error.statusCode === 409 &&
+        /pausing/.test(String(error.message));
+      if (!pausing || Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
 };
 
 /** Write a file into a running sandbox — what the memory harvester watches. */
@@ -71,11 +90,9 @@ export const writeFileInSandbox = async (
     return;
   }
   const sandbox = await findCreateosSandbox(config, sandboxId);
-  const { result } = await sandbox.runCommand("sh", ["-c", script]);
+  const result = await execRidingOutAPause(sandbox, ["-c", script]);
   if (result.exit_code !== 0) {
-    throw new Error(
-      `writeFileInSandbox failed inside ${sandboxId}: ${result.stderr}`,
-    );
+    throw new Error(`writeFileInSandbox failed inside ${sandboxId}: ${result.stderr}`);
   }
 };
 
@@ -93,7 +110,7 @@ export const sandboxReachable = async (
   try {
     const sandbox = await findCreateosSandbox(config, sandboxId);
     if (sandbox.status !== "running") return false;
-    const { result } = await sandbox.runCommand("true");
+    const result = await execRidingOutAPause(sandbox, ["-c", "true"]);
     return result.exit_code === 0;
   } catch {
     return false;
@@ -154,13 +171,7 @@ export const plantOrphan = async (
       `--label=sh.onecli.installation=${opts.installationId}`,
     ];
     await exec("docker", ["volume", "create", ...labels, volume]);
-    await exec("docker", [
-      "create",
-      `--name=${container}`,
-      ...labels,
-      opts.agentImage,
-      "true",
-    ]);
+    await exec("docker", ["create", `--name=${container}`, ...labels, opts.agentImage, "true"]);
     return { sandboxId: opts.sandboxId, ref: container };
   }
 
