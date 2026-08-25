@@ -94,7 +94,7 @@ export const startTestRunner = async (opts: StartRunnerOptions): Promise<TestRun
       apiKey: opts.config.createos.apiKey,
       network: opts.config.createos.network,
       homesDir: opts.config.createos.homesDir,
-      shape: "",
+      shape: opts.config.createos.shape,
       extraEgress: [],
       autoPauseSeconds: 0,
     },

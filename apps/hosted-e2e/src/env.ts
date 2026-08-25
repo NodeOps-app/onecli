@@ -32,6 +32,8 @@ export interface HostedE2EConfig {
     readonly apiKey: string;
     readonly network: string;
     readonly homesDir: string;
+    /** Explicit shape id. Empty = smallest shape meeting the runner limits. */
+    readonly shape: string;
   };
 }
 
@@ -94,6 +96,7 @@ const resolve = (): HostedE2EConfig | null => {
       apiKey: createosApiKey,
       network: read("RUNNER_CREATEOS_NETWORK") ?? "onecli-he2e",
       homesDir: read("RUNNER_CREATEOS_HOMES_DIR") ?? "/var/lib/onecli/he2e-homes",
+      shape: read("RUNNER_CREATEOS_SHAPE") ?? "",
     },
   };
 };
