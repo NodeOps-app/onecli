@@ -161,6 +161,26 @@ const authorityOf = (raw: string, what: string): string => {
   return `${parsed.hostname}:${parsed.port || (secure ? "443" : "80")}`;
 };
 
+/**
+ * `fetch`, but a string body always carries its own `Content-Length`.
+ *
+ * Node's fetch sends a string body without that header, and the CreateOS API
+ * answers `411 Content-Length is required` — every create, so no agent can
+ * start. Measured 2026-08-25: `whoami` and the other reads pass, only the
+ * POSTs with a body fail, and the same request through `curl`, which does set
+ * the header, succeeds.
+ *
+ * The header is correct either way. The byte length of a string body is known
+ * before the request goes out, so declaring it is what a well-behaved client
+ * does. Keep this even after the server stops requiring it.
+ */
+export const fetchWithContentLength: typeof fetch = (input, init) => {
+  if (typeof init?.body !== "string") return fetch(input, init);
+  const headers = new Headers(init.headers);
+  headers.set("content-length", String(Buffer.byteLength(init.body)));
+  return fetch(input, { ...init, headers });
+};
+
 export const deriveEgress = (
   env: Record<string, string>,
   extra: readonly string[] = [],
@@ -234,7 +254,12 @@ const startScript = (): string =>
 
 export const createCreateosBackend = (options: CreateosBackendOptions): SandboxBackend => {
   const client =
-    options.client ?? createClient({ baseUrl: options.baseUrl, apiKey: options.apiKey });
+    options.client ??
+    createClient({
+      baseUrl: options.baseUrl,
+      apiKey: options.apiKey,
+      fetch: fetchWithContentLength,
+    });
   const homes = options.homes ?? createHomeStore(options.homesDir);
 
   // Mutable so registration's stable id replaces the boot-time placeholder

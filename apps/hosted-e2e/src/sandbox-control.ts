@@ -6,7 +6,7 @@ import {
   CreateosSandboxNotFoundError,
   type Sandbox,
 } from "@nodeops-createos/sandbox";
-import { pickShape } from "@onecli/runner/backend/createos";
+import { fetchWithContentLength, pickShape } from "@onecli/runner/backend/createos";
 import {
   buildLabels,
   decodeLabel,
@@ -36,6 +36,7 @@ const createosClient = (config: HostedE2EConfig) =>
   createClient({
     baseUrl: config.createos.baseUrl,
     apiKey: config.createos.apiKey,
+    fetch: fetchWithContentLength,
   });
 
 /** Find the live CreateOS VM labeled with this platform sandbox id — the
