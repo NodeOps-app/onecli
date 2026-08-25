@@ -30,6 +30,14 @@ export interface RunnerWsServerOptions {
   port: number;
   /** Called for every valid message a supervisor sends. */
   onMessage: (sandboxId: string, message: SupervisorMessage) => void;
+  /**
+   * Called when the LIVE channel for a sandbox goes away — not for a
+   * superseded one from a previous VM. A silent close costs the control
+   * plane a whole stale-dispatch window before anything notices; measured at
+   * 73 seconds on a destroyed microVM, which is long enough for a turn to
+   * time out against a box that was already gone.
+   */
+  onDisconnect?: (sandboxId: string) => void;
 }
 
 export interface RunnerWsServer {
@@ -58,6 +66,7 @@ const HEARTBEAT_MS = 10_000;
 export const createRunnerWsServer = ({
   port,
   onMessage,
+  onDisconnect,
 }: RunnerWsServerOptions): RunnerWsServer => {
   /** token → sandboxId, consumed on connect. */
   const pending = new Map<string, string>();
@@ -173,6 +182,7 @@ export const createRunnerWsServer = ({
           reason: reason.toString(),
           current,
         });
+        if (current) onDisconnect?.(sandboxId);
       });
 
       ws.on("error", (err) => {

@@ -215,6 +215,15 @@ const main = async (): Promise<void> => {
       sendToSandbox: (sandboxId, item) => sendToSandbox(sandboxId, item),
       containerRefOf: (sandboxId) => containerRefOf(sandboxId),
     }),
+    // Say it as soon as the channel dies, rather than leaving the control
+    // plane to infer it from a dispatch that times out. A supervisor that is
+    // gone cannot run a turn, and the control plane's status guard makes the
+    // report inert for a sandbox that was parked deliberately. Measured on a
+    // destroyed microVM: without this, nothing reported for 73 seconds and
+    // the turn aimed at it expired first.
+    onDisconnect: (sandboxId) => {
+      report({ kind: "sandbox.status", sandboxId, status: "stopped" });
+    },
   });
   sendToSandbox = (sandboxId, item) => {
     const connection = wsServer.connection(sandboxId);
