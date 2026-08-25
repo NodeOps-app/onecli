@@ -65,9 +65,7 @@ export const payloadHash = (payload: SandboxStartPayload): string =>
         // refreshed to the tool that reads it), so hashing its bytes would
         // make the payload look changed on every dispatch. Real credential
         // changes still move the hash: they change `env`.
-        files: payload.files
-          .map((file) => [file.containerPath, file.mode ?? null])
-          .sort(),
+        files: payload.files.map((file) => [file.containerPath, file.mode ?? null]).sort(),
         model: payload.model ?? null,
         effort: payload.effort ?? null,
         harness: payload.harness ?? null,
@@ -169,27 +167,18 @@ const registerWithRetry = async (
       // The URL and the error, because "still booting" and "you typo'd
       // RUNNER_CONTROL_PLANE_URL" otherwise print the same line forever. Past
       // a minute of this it is no longer a startup race, so say so louder.
-      log(
-        attempt > 10 ? "error" : "warn",
-        "control plane unreachable; waiting to register",
-        {
-          attempt,
-          waitMs,
-          url: controlPlaneUrl,
-          error: String(error),
-        },
-      );
+      log(attempt > 10 ? "error" : "warn", "control plane unreachable; waiting to register", {
+        attempt,
+        waitMs,
+        url: controlPlaneUrl,
+        error: String(error),
+      });
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }
 };
 
-export const createRunner = ({
-  config,
-  backend,
-  controlPlane,
-  wsServer,
-}: RunnerDeps): Runner => {
+export const createRunner = ({ config, backend, controlPlane, wsServer }: RunnerDeps): Runner => {
   let running = false;
   let heartbeatTimer: NodeJS.Timeout | undefined;
   let reconcileTimer: NodeJS.Timeout | undefined;
@@ -243,9 +232,7 @@ export const createRunner = ({
       // Capacity is enforced here as well as at placement: the runner is the
       // only party that knows what it is actually holding right now.
       if (!existing) {
-        const live = (await backend.listSandboxes()).filter(
-          (snapshot) => snapshot.running,
-        ).length;
+        const live = (await backend.listSandboxes()).filter((snapshot) => snapshot.running).length;
         if (live >= config.maxSandboxes) {
           events.push({
             kind: "sandbox.status",
@@ -262,9 +249,8 @@ export const createRunner = ({
       }
 
       const homeRef =
-        (await backend.listHomes()).find(
-          (home) => home.sandboxId === item.sandboxId,
-        )?.ref ?? (await backend.provisionHome(item.sandboxId));
+        (await backend.listHomes()).find((home) => home.sandboxId === item.sandboxId)?.ref ??
+        (await backend.provisionHome(item.sandboxId));
 
       events.push({
         kind: "sandbox.status",
@@ -361,9 +347,7 @@ export const createRunner = ({
       // string is the operator trail. Typed against the shared vocabulary so
       // a typo cannot silently degrade to the generic copy.
       const reasonCode: SandboxStartFailureReason =
-        error instanceof ImageUnavailableError
-          ? "image_unavailable"
-          : "start_failed";
+        error instanceof ImageUnavailableError ? "image_unavailable" : "start_failed";
       events.push({
         kind: "sandbox.status",
         sandboxId: item.sandboxId,
@@ -435,10 +419,7 @@ export const createRunner = ({
    * grows past the live sandboxes.
    */
   const deliveryChains = new Map<string, Promise<void>>();
-  const enqueueDelivery = (
-    sandboxId: string,
-    task: () => Promise<void>,
-  ): void => {
+  const enqueueDelivery = (sandboxId: string, task: () => Promise<void>): void => {
     const previous = deliveryChains.get(sandboxId) ?? Promise.resolve();
     const next = previous.then(task).catch((error: unknown) => {
       log("warn", "sandbox delivery task failed", {
@@ -469,9 +450,7 @@ export const createRunner = ({
    * expected). Steers/aborts that overtake this async delivery are safe by
    * the supervisor's own machinery (steer inbox, pending aborts).
    */
-  const deliverTurn = (
-    item: Extract<RunnerWorkItem, { kind: "turn.deliver" }>,
-  ): RunnerEvent[] => {
+  const deliverTurn = (item: Extract<RunnerWorkItem, { kind: "turn.deliver" }>): RunnerEvent[] => {
     const connection = wsServer.connection(item.sandboxId);
     if (!connection) {
       // The sandbox is not connected. Say so rather than dropping the turn —
@@ -519,8 +498,7 @@ export const createRunner = ({
         // Delivery-only memory context (step 8) — forwarded verbatim; the
         // supervisor concatenates, the transcript never sees it.
         ...(item.context && { context: item.context }),
-        ...(item.attachments &&
-          item.attachments.length > 0 && { attachments: item.attachments }),
+        ...(item.attachments && item.attachments.length > 0 && { attachments: item.attachments }),
       });
     };
 
@@ -599,9 +577,7 @@ export const createRunner = ({
     return [];
   };
 
-  const abortTurn = (
-    item: Extract<RunnerWorkItem, { kind: "turn.abort" }>,
-  ): RunnerEvent[] => {
+  const abortTurn = (item: Extract<RunnerWorkItem, { kind: "turn.abort" }>): RunnerEvent[] => {
     const connection = wsServer.connection(item.sandboxId);
     if (!connection) {
       // Nothing is running it, so it is already as stopped as it can be.
@@ -632,9 +608,7 @@ export const createRunner = ({
    * anyway — and a `stopped` report would knock a healthy-but-reconnecting
    * sandbox into a needless respawn cycle.
    */
-  const steerMessage = (
-    item: Extract<RunnerWorkItem, { kind: "turn.message" }>,
-  ): RunnerEvent[] => {
+  const steerMessage = (item: Extract<RunnerWorkItem, { kind: "turn.message" }>): RunnerEvent[] => {
     const connection = wsServer.connection(item.sandboxId);
     if (!connection) {
       log("info", "steer skipped — no live channel; promotion will cover it", {
@@ -662,9 +636,7 @@ export const createRunner = ({
    * its next boot), while reporting `stopped` here would knock a
    * healthy-but-reconnecting sandbox into a needless respawn cycle.
    */
-  const syncHome = (
-    item: Extract<RunnerWorkItem, { kind: "skills.changed" }>,
-  ): RunnerEvent[] => {
+  const syncHome = (item: Extract<RunnerWorkItem, { kind: "skills.changed" }>): RunnerEvent[] => {
     const connection = wsServer.connection(item.sandboxId);
     if (!connection) {
       log("info", "home sync skipped — no live channel", {
@@ -805,9 +777,7 @@ export const createRunner = ({
     });
     if (candidates.length === 0) return;
 
-    const uniqueIds = [
-      ...new Set(candidates.map((object) => object.sandboxId)),
-    ];
+    const uniqueIds = [...new Set(candidates.map((object) => object.sandboxId))];
     const missing = new Set<string>();
     try {
       for (let i = 0; i < uniqueIds.length; i += MAX_SANDBOX_CHECK_IDS) {
@@ -860,8 +830,10 @@ export const createRunner = ({
   const reconcile = async (): Promise<void> => {
     const expected = new Set(await controlPlane.listSandboxIds());
     const unreachable: RunnerEvent[] = [];
+    const seen = new Set<string>();
 
     for (const snapshot of await backend.listSandboxes()) {
+      seen.add(snapshot.sandboxId);
       if (expected.has(snapshot.sandboxId)) {
         /**
          * RUNNING BUT UNREACHABLE — report it, don't leave it stranded.
@@ -894,11 +866,7 @@ export const createRunner = ({
             sandboxId: snapshot.sandboxId,
             status: "stopped",
           });
-        } else if (
-          !snapshot.running &&
-          channelless &&
-          !reportedDead.has(snapshot.containerRef)
-        ) {
+        } else if (!snapshot.running && channelless && !reportedDead.has(snapshot.containerRef)) {
           /**
            * DEAD BUT EXPECTED — the double-death shape: the container died
            * while THIS PROCESS was down (host reboot, docker restart), so the
@@ -934,6 +902,38 @@ export const createRunner = ({
           error: String(error),
         });
       }
+    }
+
+    /**
+     * VANISHED — this runner started it, the control plane still expects it,
+     * and the backend has no record of it at all.
+     *
+     * The loop above can only judge a sandbox the backend still lists, so it
+     * covers "running but unreachable" and "dead but expected" and nothing
+     * else. A docker container that is killed still exists to be inspected,
+     * so that was always enough. A CreateOS VM that is destroyed is simply
+     * gone, and an in-flight turn against it would otherwise wait out the
+     * whole ceiling with no report of any kind.
+     *
+     * Only sandboxes THIS process started are judged here. A sandbox the
+     * control plane expects but that was never created belongs to the start
+     * arm, not to reconcile, and `awaitingConnection` keeps a box that is
+     * mid-boot from being declared gone.
+     */
+    for (const [sandboxId, containerRef] of sandboxContainers) {
+      if (seen.has(sandboxId) || !expected.has(sandboxId)) continue;
+      if (wsServer.awaitingConnection(sandboxId)) continue;
+      if (reportedDead.has(containerRef)) continue;
+      reportedDead.add(containerRef);
+      log("warn", "sandbox vanished from the backend; reporting", {
+        sandboxId,
+        containerRef,
+      });
+      unreachable.push({
+        kind: "sandbox.status",
+        sandboxId,
+        status: "stopped",
+      });
     }
 
     // Volumes are reaped separately: a sandbox whose container was already

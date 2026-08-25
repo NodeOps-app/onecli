@@ -47,9 +47,7 @@ const config: RunnerConfig = {
   },
 };
 
-const payload = (
-  overrides: Partial<SandboxStartPayload> = {},
-): SandboxStartPayload => ({
+const payload = (overrides: Partial<SandboxStartPayload> = {}): SandboxStartPayload => ({
   env: {
     HTTPS_PROXY: "http://x:aoc_token@gateway:10255",
     ANTHROPIC_API_KEY: "placeholder",
@@ -124,10 +122,7 @@ beforeEach(() => {
         ? {
             sandboxId,
             send: (item: WorkItem) => {
-              delivered.set(sandboxId, [
-                ...(delivered.get(sandboxId) ?? []),
-                item,
-              ]);
+              delivered.set(sandboxId, [...(delivered.get(sandboxId) ?? []), item]);
             },
           }
         : undefined,
@@ -187,16 +182,9 @@ describe("start", () => {
     queued.push(startItem());
     await runner.tick(0);
 
-    expect(posted.map((event) => event.kind)).toEqual([
-      "sandbox.status",
-      "sandbox.status",
-    ]);
-    expect(
-      posted.every((event) => "status" in event && event.status === "starting"),
-    ).toBe(true);
-    expect(
-      posted.some((event) => "containerRef" in event && event.containerRef),
-    ).toBe(true);
+    expect(posted.map((event) => event.kind)).toEqual(["sandbox.status", "sandbox.status"]);
+    expect(posted.every((event) => "status" in event && event.status === "starting")).toBe(true);
+    expect(posted.some((event) => "containerRef" in event && event.containerRef)).toBe(true);
   });
 
   it("reports failed when the backend cannot create the container", async () => {
@@ -299,9 +287,7 @@ describe("every start hands the sandbox a live control-channel credential", () =
     await runner.tick(0);
 
     expect(backend.sandboxes.get("sb-1")?.containerRef).not.toBe(firstRef);
-    expect(backend.sandboxes.get("sb-1")?.spec.env.HTTPS_PROXY).toContain(
-      "aoc_ROTATED",
-    );
+    expect(backend.sandboxes.get("sb-1")?.spec.env.HTTPS_PROXY).toContain("aoc_ROTATED");
   });
 
   it("keeps the SAME home across a recreate (the durable disk)", async () => {
@@ -355,18 +341,14 @@ describe("stop", () => {
 
     expect(backend.sandboxes.get("sb-1")?.running).toBe(false);
     expect(backend.homes.get("sb-1")).toBe("fake-home-sb-1");
-    expect(posted).toEqual([
-      { kind: "sandbox.status", sandboxId: "sb-1", status: "stopped" },
-    ]);
+    expect(posted).toEqual([{ kind: "sandbox.status", sandboxId: "sb-1", status: "stopped" }]);
   });
 
   it("treats a stop for an unknown sandbox as already stopped", async () => {
     queued.push({ kind: "sandbox.stop", sandboxId: "sb-ghost" });
     await runner.tick(0);
 
-    expect(posted).toEqual([
-      { kind: "sandbox.status", sandboxId: "sb-ghost", status: "stopped" },
-    ]);
+    expect(posted).toEqual([{ kind: "sandbox.status", sandboxId: "sb-ghost", status: "stopped" }]);
   });
 });
 
@@ -430,9 +412,7 @@ describe("a sandbox that is running but unreachable", () => {
 
     await runner.reconcile();
 
-    expect(posted).toEqual([
-      { kind: "sandbox.status", sandboxId: "sb-1", status: "stopped" },
-    ]);
+    expect(posted).toEqual([{ kind: "sandbox.status", sandboxId: "sb-1", status: "stopped" }]);
   });
 
   it("says NOTHING about a sandbox that is still dialling in", async () => {
@@ -446,6 +426,28 @@ describe("a sandbox that is running but unreachable", () => {
 
     await runner.reconcile();
 
+    expect(posted).toEqual([]);
+  });
+
+  it("reports a sandbox that vanished from the backend entirely", async () => {
+    // A killed docker container still exists to be inspected, so reconcile
+    // could always find it. A destroyed microVM is simply gone and never
+    // appears in listSandboxes() again. Walking only the backend's list
+    // therefore misses it, and an in-flight turn against it would wait out
+    // the whole ceiling with no report of any kind.
+    queued.push(startItem("sb-1"));
+    await runner.tick(0);
+    await backend.removeSandbox(backend.sandboxes.get("sb-1")!.containerRef);
+    expectedSandboxIds = ["sb-1"];
+    posted.length = 0;
+
+    await runner.reconcile();
+
+    expect(posted).toEqual([{ kind: "sandbox.status", sandboxId: "sb-1", status: "stopped" }]);
+
+    // Once, then quiet — the same discipline the dead-but-expected path keeps.
+    posted.length = 0;
+    await runner.reconcile();
     expect(posted).toEqual([]);
   });
 
@@ -479,9 +481,7 @@ describe("a sandbox that is running but unreachable", () => {
     posted.length = 0;
 
     await runner.reconcile();
-    expect(posted).toEqual([
-      { kind: "sandbox.status", sandboxId: "sb-1", status: "stopped" },
-    ]);
+    expect(posted).toEqual([{ kind: "sandbox.status", sandboxId: "sb-1", status: "stopped" }]);
 
     posted.length = 0;
     await runner.reconcile();
@@ -546,9 +546,7 @@ describe("the control channel must not be proxied", () => {
     );
     await runner.tick(0);
 
-    expect(backend.sandboxes.get("sb-1")?.spec.env.NO_PROXY).toBe(
-      "localhost,127.0.0.1,runner",
-    );
+    expect(backend.sandboxes.get("sb-1")?.spec.env.NO_PROXY).toBe("localhost,127.0.0.1,runner");
   });
 
   it("does not duplicate the host when it is already exempt", async () => {
@@ -732,9 +730,7 @@ describe("object ownership survives a restart", () => {
 
 describe("home sync fan-out", () => {
   const syncItem = (
-    overrides: Partial<
-      Extract<RunnerWorkItem, { kind: "skills.changed" }>
-    > = {},
+    overrides: Partial<Extract<RunnerWorkItem, { kind: "skills.changed" }>> = {},
   ): RunnerWorkItem => ({
     kind: "skills.changed",
     sandboxId: "sb-1",
