@@ -292,6 +292,46 @@ which is already there. Write `detach --yes <net> <box>`.
 
    Either send a body from the CLI or stop requiring the header.
 
+## BLOCKER: the SDK cannot create a sandbox (411)
+
+On 2026-08-25 the CreateOS API began answering the TypeScript SDK with
+`411 Content-Length is required`. This stops the onecli createos backend
+completely: no sandbox can be created, so no agent can start.
+
+The same endpoint, the same credentials, the same minute:
+
+| Client | Sends Content-Length | Result |
+|---|---|---|
+| `curl -d '{...}'` | yes | 200, sandbox created |
+| `@nodeops-createos/sandbox` 0.8.1 | no | 411 |
+
+Node's `fetch` does not put a `Content-Length` on this request, and the
+server now demands one. Read calls are unaffected: `whoami`, `listShapes`
+and `networks.list` all return 200. Only the POST with a body fails.
+
+The Go CLI is unaffected, which is why `createos sandbox create` still
+works while the runner cannot create anything.
+
+This is not fixable inside onecli. The SDK builds the request, and 0.8.1
+is the newest published version. Either the server must stop requiring the
+header or the SDK must send it.
+
+Timeline, for the CreateOS team: SDK creates succeeded at 06:04 UTC and
+failed consistently from 10:12 UTC on the same day, same account, same SDK
+version. Something changed on the server side between those times.
+
+Reproduce:
+
+```bash
+node -e '
+import("@nodeops-createos/sandbox").then(async ({createClient}) => {
+  const c = createClient({baseUrl: process.env.RUNNER_CREATEOS_BASE_URL,
+                          apiKey: process.env.RUNNER_CREATEOS_API_KEY});
+  console.log(await c.whoami());                       // 200
+  await c.createSandbox({shape:"s-1vcpu-1gb", rootfs:"debian:13"});  // 411
+})'
+```
+
 ## Auto-pause counts API traffic, not work
 
 A sandbox with `auto_pause_after_seconds` set pauses while a long job is
