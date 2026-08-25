@@ -164,6 +164,43 @@ names the runner's IP at spawn time. If the runner moves, sandboxes that
 wake later cannot reach it. Re-assert the allowlist on wake, or give the
 runner a stable address.
 
+## A parked VM leaves a half-open control channel
+
+This one cost a full debugging session. Record it.
+
+When the runner parks an agent, it pauses the VM. The VM stops answering,
+but its WebSocket to the runner sends no FIN. The runner keeps that socket
+and goes on believing the supervisor is connected. Measured: the socket
+stayed in the map for the whole run and never closed on its own.
+
+Two failures followed, both silent:
+
+- Every turn dispatched to that agent went into a socket nobody reads. The
+  turn never settled and the test timed out.
+- The reconcile that recovers a stranded sandbox asks whether a control
+  channel exists. It was told yes. It did nothing.
+
+A microVM differs from a container here. A container that stops closes its
+socket. A paused microVM is frozen, so nothing closes anything.
+
+The fix is a heartbeat. The runner pings an idle channel every 10 seconds
+and terminates a peer that misses two pings. `connection()` also refuses a
+socket that is not `OPEN`. See `apps/runner/src/ws/server.ts`.
+
+Each channel now carries a sequence number in its connect and close logs.
+During a wake the old VM and the new one overlap, so the sandbox id alone
+cannot say which socket an event belongs to. Read the `seq` field first
+when reading these logs.
+
+## Spawn time is not a constant
+
+A spawn is not a container start. Measured spawn times ranged from 0.6
+seconds to 97 seconds for the same shape and template, decided by host
+placement. Two spawns plus a park do not reliably fit in a 120-second test
+timeout.
+
+Any timeout that assumed container speed must be raised for this backend.
+
 ## Name resolution does not work
 
 The CLI prints "Other sandboxes on this network can now reach this one by
