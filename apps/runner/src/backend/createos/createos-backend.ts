@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   createClient,
   CreateosSandboxNotFoundError,
@@ -83,6 +84,8 @@ export const MAX_ARCHIVE_BYTES = 500 * 1024 * 1024;
 /** CreateOS caps a user-facing VM name at 22 characters (DNS-label rules). */
 const NAME_PREFIX = "onecli-";
 const NAME_BODY = 22 - NAME_PREFIX.length;
+/** How much of the body is a digest of the full id rather than its head. */
+const NAME_DIGEST = 8;
 
 export interface CreateosBackendOptions {
   /** Initial owner label; replaced by `identify()` after registration. */
@@ -359,9 +362,21 @@ export const createCreateosBackend = (options: CreateosBackendOptions): SandboxB
     });
   };
 
-  /** A short, human-readable VM name. The labels carry the real identity. */
-  const vmName = (sandboxId: string): string =>
-    `${NAME_PREFIX}${sandboxId.replaceAll("-", "").slice(0, NAME_BODY)}`;
+  /**
+   * A short, human-readable VM name. The labels carry the real identity.
+   *
+   * The head alone is not enough. Two sandbox ids that differ only past the
+   * cut — `<nonce>-sbx` and `<nonce>-sbx2` are the shape the e2e suite makes
+   * — truncate to the same name, and CreateOS enforces the name as unique per
+   * user. The second create then 409s and falls back to an unnamed VM, which
+   * costs a whole extra round trip on a backend where a create already takes
+   * tens of seconds. The digest tail keeps siblings apart.
+   */
+  const vmName = (sandboxId: string): string => {
+    const head = sandboxId.replaceAll("-", "").slice(0, NAME_BODY - NAME_DIGEST);
+    const digest = createHash("sha256").update(sandboxId).digest("hex").slice(0, NAME_DIGEST);
+    return `${NAME_PREFIX}${head}${digest}`;
+  };
 
   const connect = async (ref: ContainerRef): Promise<Sandbox | null> => {
     try {

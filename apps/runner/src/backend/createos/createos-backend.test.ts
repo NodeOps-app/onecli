@@ -535,6 +535,29 @@ describe("createos backend", () => {
     ).rejects.toBeInstanceOf(ImageUnavailableError);
   });
 
+  it("gives sibling sandbox ids different VM names", async () => {
+    // CreateOS caps a VM name at 22 characters and enforces it as unique per
+    // user. Two ids that differ only past the cut — the `-sbx` / `-sbx2` pair
+    // the e2e suite makes — used to truncate to the same name, so the second
+    // create 409'd and fell back to an unnamed VM. That costs a whole extra
+    // round trip on a backend where a create already takes tens of seconds.
+    const backend = backendFor();
+    await backend.prepare();
+    backend.identify("runner-a");
+
+    const names = await Promise.all(
+      ["he2e-9b70e4bceb2bf37392-sbx", "he2e-9b70e4bceb2bf37392-sbx2"].map(async (sandboxId) => {
+        const ref = await backend.createSandbox(
+          spec({ sandboxId, homeRef: await backend.provisionHome(sandboxId) }),
+        );
+        return fake.vms.get(ref)!.view.name;
+      }),
+    );
+
+    expect(names[0]).not.toBe(names[1]);
+    for (const name of names) expect(name!.length).toBeLessThanOrEqual(22);
+  });
+
   it("retries without a name when the name is taken", async () => {
     const backend = backendFor();
     await backend.prepare();
