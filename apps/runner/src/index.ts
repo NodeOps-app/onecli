@@ -215,13 +215,13 @@ const main = async (): Promise<void> => {
       sendToSandbox: (sandboxId, item) => sendToSandbox(sandboxId, item),
       containerRefOf: (sandboxId) => containerRefOf(sandboxId),
     }),
-    // Say it as soon as the channel dies, rather than leaving the control
-    // plane to infer it from a dispatch that times out. A supervisor that is
-    // gone cannot run a turn, and the control plane's status guard makes the
-    // report inert for a sandbox that was parked deliberately. Measured on a
-    // destroyed microVM: without this, nothing reported for 73 seconds and
-    // the turn aimed at it expired first.
-    onDisconnect: (sandboxId) => {
+    // Say it as soon as the heartbeat gives up on a channel, rather than
+    // leaving the control plane to infer it from a dispatch that times out.
+    // Measured on a destroyed microVM: without this, nothing reported for 73
+    // seconds and the turn aimed at it expired first. Only a peer that
+    // vanished counts — a supervisor that closes cleanly after its turn is
+    // healthy, and calling it dead parks it out from under the next one.
+    onChannelLost: (sandboxId) => {
       report({ kind: "sandbox.status", sandboxId, status: "stopped" });
     },
   });

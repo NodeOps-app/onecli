@@ -31,13 +31,17 @@ export interface RunnerWsServerOptions {
   /** Called for every valid message a supervisor sends. */
   onMessage: (sandboxId: string, message: SupervisorMessage) => void;
   /**
-   * Called when the LIVE channel for a sandbox goes away — not for a
-   * superseded one from a previous VM. A silent close costs the control
-   * plane a whole stale-dispatch window before anything notices; measured at
-   * 73 seconds on a destroyed microVM, which is long enough for a turn to
-   * time out against a box that was already gone.
+   * Called when the live channel for a sandbox dies WITHOUT the peer ever
+   * saying goodbye — the heartbeat gave up on it. That means the VM is gone,
+   * and a silent close costs the control plane a whole stale-dispatch window
+   * before anything notices: measured at 73 seconds on a destroyed microVM,
+   * long enough for a turn aimed at it to expire first.
+   *
+   * NOT called for an ordinary close. A supervisor closes its channel every
+   * time it finishes a turn and exits, and calling a healthy box dead on that
+   * signal parks it out from under the next turn.
    */
-  onDisconnect?: (sandboxId: string) => void;
+  onChannelLost?: (sandboxId: string) => void;
 }
 
 export interface RunnerWsServer {
@@ -66,7 +70,7 @@ const HEARTBEAT_MS = 10_000;
 export const createRunnerWsServer = ({
   port,
   onMessage,
-  onDisconnect,
+  onChannelLost,
 }: RunnerWsServerOptions): RunnerWsServer => {
   /** token → sandboxId, consumed on connect. */
   const pending = new Map<string, string>();
@@ -132,6 +136,9 @@ export const createRunnerWsServer = ({
       // told the supervisor is fine. A ping the peer never answers is the
       // only way to tell a quiet channel from a dead one.
       let alive = true;
+      // Set only by the heartbeat, so `close` can tell a peer that vanished
+      // from one that hung up politely.
+      let lost = false;
       ws.on("pong", () => {
         alive = true;
       });
@@ -141,6 +148,7 @@ export const createRunnerWsServer = ({
             sandboxId,
             seq,
           });
+          lost = true;
           ws.terminate();
           return;
         }
@@ -182,7 +190,7 @@ export const createRunnerWsServer = ({
           reason: reason.toString(),
           current,
         });
-        if (current) onDisconnect?.(sandboxId);
+        if (current && lost) onChannelLost?.(sandboxId);
       });
 
       ws.on("error", (err) => {
