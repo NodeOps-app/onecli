@@ -48,6 +48,13 @@ export interface RunnerWsServer {
   close(): Promise<void>;
 }
 
+/**
+ * How often the runner pings an idle supervisor channel. A peer that misses
+ * two consecutive pings is terminated, so a dead microVM is noticed within
+ * roughly twice this window rather than never.
+ */
+const HEARTBEAT_MS = 10_000;
+
 export const createRunnerWsServer = ({
   port,
   onMessage,
@@ -55,6 +62,14 @@ export const createRunnerWsServer = ({
   /** token → sandboxId, consumed on connect. */
   const pending = new Map<string, string>();
   const connections = new Map<string, WebSocket>();
+  /**
+   * Every accepted channel gets a number, logged on connect and on close.
+   * Two VMs for one agent overlap during a wake — the old one is still
+   * winding down while the new one dials in — so `sandboxId` alone cannot
+   * say which socket an event belongs to.
+   */
+  let channelSeq = 0;
+  const seqOf = new WeakMap<WebSocket, number>();
 
   const http: Server = createServer((req, res) => {
     // The compose health check — the only plain HTTP this server answers.
@@ -95,8 +110,36 @@ export const createRunnerWsServer = ({
     pending.delete(token);
 
     wss.handleUpgrade(request, socket, head, (ws) => {
+      channelSeq += 1;
+      const seq = channelSeq;
+      seqOf.set(ws, seq);
       connections.set(sandboxId, ws);
-      log("info", "supervisor connected", { sandboxId });
+      log("info", "supervisor connected", { sandboxId, seq });
+
+      // A microVM can vanish without its socket ever sending a FIN, which
+      // leaves this side holding a half-open channel it believes is healthy:
+      // every dispatched turn is written into a socket nobody reads, and the
+      // reconcile that would recover the agent asks `connection()` and is
+      // told the supervisor is fine. A ping the peer never answers is the
+      // only way to tell a quiet channel from a dead one.
+      let alive = true;
+      ws.on("pong", () => {
+        alive = true;
+      });
+      const heartbeat = setInterval(() => {
+        if (!alive) {
+          log("warn", "supervisor channel unanswered; terminating", {
+            sandboxId,
+            seq,
+          });
+          ws.terminate();
+          return;
+        }
+        alive = false;
+        ws.ping();
+      }, HEARTBEAT_MS);
+      // `close` fires for a terminate() too, so the timer is cleared once.
+      ws.on("close", () => clearInterval(heartbeat));
 
       ws.on("message", (data) => {
         let parsed: unknown;
@@ -125,6 +168,7 @@ export const createRunnerWsServer = ({
         if (current) connections.delete(sandboxId);
         log("info", "supervisor disconnected", {
           sandboxId,
+          seq: seqOf.get(ws),
           code,
           reason: reason.toString(),
           current,
@@ -166,7 +210,10 @@ export const createRunnerWsServer = ({
 
     connection(sandboxId) {
       const ws = connections.get(sandboxId);
-      if (!ws) return undefined;
+      // A socket that is closing or already closed is not a channel. Handing
+      // one back makes every send a silent no-op and tells the reconcile the
+      // agent is reachable, so a stranded sandbox is never recovered.
+      if (!ws || ws.readyState !== ws.OPEN) return undefined;
       return {
         sandboxId,
         send(item: WorkItem) {
