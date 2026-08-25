@@ -95,6 +95,16 @@ const createFakeClient = () => {
         },
       },
       async runCommand(cmd: string, args: string[]) {
+        // The real control plane rejects every exec against a paused VM.
+        // Modelling it is the only way a test can catch a wake path that
+        // forgets to resume first.
+        if (vm.view.status === "paused") {
+          throw apiError(
+            CreateosSandboxValidationError,
+            409,
+            "sandbox is paused, expected running",
+          );
+        }
         const script = args[args.length - 1] ?? "";
         vm.commands.push(script);
         // Model the only two commands whose EFFECT the backend depends on.
@@ -114,6 +124,10 @@ const createFakeClient = () => {
       },
       async pause() {
         vm.view = { ...vm.view, status: "paused" };
+        return sandbox;
+      },
+      async resume() {
+        vm.view = { ...vm.view, status: "running" };
         return sandbox;
       },
       async destroy() {
@@ -413,6 +427,24 @@ describe("createos backend", () => {
     expect(
       fake.vms.get(ref)!.commands.some((cmd) => /chown -R node:node \/workspace/.test(cmd)),
     ).toBe(true);
+  });
+
+  it("resumes a parked VM before starting it again", async () => {
+    // stopSandbox parks a VM by pausing it. A wake then arrives with a paused
+    // VM, and the real control plane 409s every exec against one. Without a
+    // resume, the whole sleep-wake path fails.
+    const backend = backendFor();
+    await backend.prepare();
+    backend.identify("runner-a");
+    const ref = await backend.createSandbox(
+      spec({ homeRef: await backend.provisionHome(spec().sandboxId) }),
+    );
+    await backend.startSandbox(ref);
+    await backend.stopSandbox(ref);
+    expect(fake.vms.get(ref)!.view.status).toBe("paused");
+
+    await expect(backend.startSandbox(ref)).resolves.toBeUndefined();
+    expect(fake.vms.get(ref)!.view.status).toBe("running");
   });
 
   it("carries the home across the destroy-and-recreate every start does", async () => {
