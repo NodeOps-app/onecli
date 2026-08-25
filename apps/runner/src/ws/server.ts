@@ -116,9 +116,19 @@ export const createRunnerWsServer = ({
         onMessage(sandboxId, message.data);
       });
 
-      ws.on("close", () => {
-        if (connections.get(sandboxId) === ws) connections.delete(sandboxId);
-        log("info", "supervisor disconnected", { sandboxId });
+      ws.on("close", (code: number, reason: Buffer) => {
+        // `current` separates the two cases an operator cannot otherwise
+        // tell apart: the live channel dropping, and a superseded channel
+        // from a previous VM for the same agent finally winding down. The
+        // close code says who closed it and why.
+        const current = connections.get(sandboxId) === ws;
+        if (current) connections.delete(sandboxId);
+        log("info", "supervisor disconnected", {
+          sandboxId,
+          code,
+          reason: reason.toString(),
+          current,
+        });
       });
 
       ws.on("error", (err) => {
